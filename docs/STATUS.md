@@ -29,20 +29,22 @@ hook modules).
 
 ## Next step
 
-All four v0.2 agent branches are merged. The lead additions are done: the `ci.changed` and
-`agent.config_changed` signals, taint text that always names the signal, an `mcp` CI job, an
-explicit `--repo` on hooks, and updated docs.
+The v0.2 fail-open review is merged: `tests/review_v02/`, with 22 red `failopen` tests over
+10 paths. The fixes are split up:
+- **Fix agent "fix-tamper"** (branch `v02/fix-tamper`; owns `signals.py`, `inventory.py` and their
+  unit tests): review #7 (skip aliases, unicode, `__test__`, `importorskip`, uncollected
+  locations, `jest.roots`, `pytest.toml`) and #8 (`PYTEST_ADDOPTS`, positional paths, `--`
+  passthrough).
+- **The lead** fixes:
+  - #1–#2: a client or CLI `--base` may only widen the diff (merge-base with the automatic or
+    remembered BASE) and never writes the anchor;
+  - #3: nested repositories are refused, the hook uses `CLAUDE_PROJECT_DIR`, and the MCP server is
+    pinned to its launch root;
+  - #4: SIGTERM, SIGHUP and a deadline block;
+  - #5: stdin is decoded inside the wrapper;
+  - #6: taint and tree-changed only downgrade a PASS.
 
-Measured on 2026-10-13:
-- **Suite:** 679 passed, 13 skipped (the MCP tests skip without the SDK, plus 1 root-only skip).
-  With the SDK, the MCP and contract tests give 19 passed.
-- **`plan` cold start:** median 188–195 ms, max 279 ms. v0.1 was 179–188 ms. The tamper agent's
-  signals add about 8 ms, and the MCP extra adds nothing.
-
-Now: launch a fresh fail-open reviewer, scoped to `hooks.py`, `mcp_server.py`, the tamper signals in
-`signals.py` / `decisions.py`, and the taint handling in `api.py`. It writes tests only, under
-`tests/review_v02/`. Then fix every confirmed finding, and confirm CI is green on `claude/v0.2`
-before reporting to the owner.
+Run the MCP review tests with `PYTHONPATH=src /tmp/claude-0/mcpvenv/bin/python -m pytest`.
 
 ## Upstream repos inspected
 
