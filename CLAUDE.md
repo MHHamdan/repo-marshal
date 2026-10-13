@@ -37,8 +37,8 @@ Then read `docs/STATUS.md` and continue from "Next step".
 Cloud containers default to another identity, so at the start of every session run:
 
 ```bash
-export GIT_AUTHOR_NAME="Mohammed Hamdan"    GIT_AUTHOR_EMAIL="mh2022ets@gmail.com"
-export GIT_COMMITTER_NAME="Mohammed Hamdan" GIT_COMMITTER_EMAIL="mh2022ets@gmail.com"
+git config --local user.name  "Mohammed Hamdan"      # repo-local; shell exports don't persist
+git config --local user.email "mh2022ets@gmail.com"
 printf '#!/usr/bin/env bash\nexec "$(git rev-parse --show-toplevel)/scripts/check-commit-identity.sh" --msg "$1"\n' \
   > .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg
 ```
