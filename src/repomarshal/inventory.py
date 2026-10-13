@@ -36,6 +36,20 @@ definition (the script body + pm for package.json; the relevant tool table / fil
 python configs; the [gates.<id>] table for policy gates) and compare with the same definition in
 the WORKING TREE (git.read_worktree). If they differ (changed, removed, or the file was deleted),
 definition_changed=True. Native gates never change.
+
+M14 also covers files the gate's tool reads or executes, compared as "any change" via the change
+set (added, modified, deleted or renamed; both path and old_path count):
+  * the tool's definition file set within the gate scope (_is_definition_file below), e.g.
+    conftest.py for pytest, ruff.toml for ruff, tsconfig*.json / .npmrc for package.json scripts;
+  * repository files named by the BASE command: tokens of the package.json script body and its
+    pre/post hooks (shlex), or the argv of a policy gate, resolved relative to the gate cwd.
+package.json, pyproject.toml and repomarshal.toml stay compared semantically (above), and paths
+under .repomarshal/ or node_modules/ never count. The changed paths are appended to Gate.source
+("...; definition changed: <paths>").
+
+Gate ids are unique: a subdirectory scope named "root" (any case) is "root/:<kind>" so it cannot
+collide with the repository root scope "root:<kind>"; build_inventory raises ValueError on any
+duplicate id.
 """
 
 from __future__ import annotations
@@ -44,9 +58,12 @@ import configparser
 import dataclasses
 import json
 import os
+import posixpath
+import shlex
 import shutil
 import sys
 import tomllib
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,6 +114,31 @@ LOCKFILES = (
     ("bun.lockb", "bun"),
 )
 PYTEST = ("python", "-m", "pytest", "-q")
+
+# Gate families: which definition file set (below) applies to a gate.
+PYTEST_GATE = "pytest"
+RUFF_GATE = "ruff"
+MYPY_GATE = "mypy"
+PYRIGHT_GATE = "pyright"
+SCRIPT_GATE = "script"
+POLICY_GATE = "policy"
+
+PYTEST_FILES = frozenset({"conftest.py", "pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg"})
+RUFF_FILES = frozenset({"ruff.toml", ".ruff.toml"})
+MYPY_FILES = frozenset({"mypy.ini", ".mypy.ini", "setup.cfg"})
+SCRIPT_CONFIG_PREFIXES = (
+    "eslint.config.",
+    ".eslintrc",
+    ".babelrc",
+    "jest.config.",
+    "vitest.config.",
+    "playwright.config.",
+    "babel.config.",
+    "vite.config.",
+)
+# Compared semantically by the digest; an edit to them alone (e.g. a dependency bump) is not a
+# definition change even when a command names them.
+SEMANTIC_FILES = frozenset({"package.json", "pyproject.toml", POLICY_FILE})
 INTEGRATION_DIR = "tests/integration"
 
 _MALFORMED = object()
@@ -285,6 +327,9 @@ def _policy_gate_definition(gate_id: str) -> Callable[[_Tree, str], Any]:
 class _Candidate:
     gate: Gate
     definition: Callable[[_Tree, str], Any]
+    family: str = POLICY_GATE
+    # BASE command words that may name repository files the gate executes.
+    words: tuple[str, ...] = ()
 
 
 def _jsonable(obj: Any) -> Any:
@@ -303,10 +348,22 @@ def _digest(definition: Any) -> str:
 
 
 def _scope_name(scope: str) -> str:
-    return scope[:-1] if scope else "root"
+    """The id prefix: "root" for the repository root, "root/" for a subdirectory named root."""
+    if not scope:
+        return "root"
+    name = scope[:-1]
+    return name + "/" if name.lower() == "root" else name
 
 
-def _make(scope: str, kind: GateKind, argv: tuple[str, ...], source: str, definition) -> _Candidate:
+def _make(
+    scope: str,
+    kind: GateKind,
+    argv: tuple[str, ...],
+    source: str,
+    definition,
+    family: str,
+    words: tuple[str, ...] = (),
+) -> _Candidate:
     gate = Gate(
         id=f"{_scope_name(scope)}:{kind.value}",
         kind=kind,
@@ -316,7 +373,7 @@ def _make(scope: str, kind: GateKind, argv: tuple[str, ...], source: str, defini
         cost=DEFAULT_COST[kind],
         source=source,
     )
-    return _Candidate(gate, definition)
+    return _Candidate(gate, definition, family, words)
 
 
 def _package_json_gates(tree: _Tree, scope: str) -> list[_Candidate]:
@@ -333,7 +390,11 @@ def _package_json_gates(tree: _Tree, scope: str) -> list[_Candidate]:
             body = scripts.get(name)
             if isinstance(body, str) and body.strip() and NPM_PLACEHOLDER not in body:
                 source = f"{scope}package.json#scripts.{name}"
-                out.append(_make(scope, kind, (pm, "run", name), source, _script_definition(name)))
+                bodies = (body, scripts.get("pre" + name), scripts.get("post" + name))
+                words = tuple(w for b in bodies if isinstance(b, str) for w in _shell_words(b))
+                definition = _script_definition(name)
+                argv = (pm, "run", name)
+                out.append(_make(scope, kind, argv, source, definition, SCRIPT_GATE, words))
                 break
     return out
 
@@ -345,13 +406,17 @@ def _python_gates(tree: _Tree, scope: str, files: tuple[str, ...]) -> list[_Cand
     ruff = _resolve(RUFF_CHAIN, tree, scope, at_base=True)
     if ruff:
         argv = ("ruff", "check", ".")
-        out.append(_make(scope, GateKind.LINT, argv, ruff.source, _chain_definition(RUFF_CHAIN)))
-    for chain, argv in ((MYPY_CHAIN, ("mypy", ".")), (PYRIGHT_CHAIN, ("pyright",))):
+        definition = _chain_definition(RUFF_CHAIN)
+        out.append(_make(scope, GateKind.LINT, argv, ruff.source, definition, RUFF_GATE))
+    typecheckers = (
+        (MYPY_CHAIN, ("mypy", "."), MYPY_GATE),
+        (PYRIGHT_CHAIN, ("pyright",), PYRIGHT_GATE),
+    )
+    for chain, argv, family in typecheckers:
         found = _resolve(chain, tree, scope, at_base=True)
         if found:
-            out.append(
-                _make(scope, GateKind.TYPECHECK, argv, found.source, _chain_definition(chain))
-            )
+            definition = _chain_definition(chain)
+            out.append(_make(scope, GateKind.TYPECHECK, argv, found.source, definition, family))
             break
 
     tests = scope + "tests/"
@@ -370,10 +435,10 @@ def _python_gates(tree: _Tree, scope: str, files: tuple[str, ...]) -> list[_Cand
     unit_source = pytest_cfg.source if pytest_cfg else tests
     definition = _chain_definition(PYTEST_CHAIN)
     unit_argv = PYTEST + (f"--ignore={INTEGRATION_DIR}",) if has_integration else PYTEST
-    out.append(_make(scope, GateKind.UNIT, unit_argv, unit_source, definition))
+    out.append(_make(scope, GateKind.UNIT, unit_argv, unit_source, definition, PYTEST_GATE))
     if has_integration:
         argv = PYTEST + (INTEGRATION_DIR,)
-        out.append(_make(scope, GateKind.INTEGRATION, argv, integration, definition))
+        out.append(_make(scope, GateKind.INTEGRATION, argv, integration, definition, PYTEST_GATE))
     return out
 
 
@@ -385,6 +450,104 @@ def detect_scopes(files: tuple[str, ...]) -> tuple[str, ...]:
         if parts[-1] in SCOPE_MANIFESTS and len(parts) <= 2:
             scopes.add("" if len(parts) == 1 else parts[0] + "/")
     return tuple(sorted(scopes))
+
+
+# --------------------------------------------------------------------------- definition files
+
+
+def _shell_words(command: str) -> list[str]:
+    """Words of a shell command (operators split off); whitespace split if it does not lex."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return command.split()
+
+
+def _never_counts(path: str) -> bool:
+    parts = path.split("/")
+    return parts[0] == ".repomarshal" or "node_modules" in parts
+
+
+def _changed_paths(change: ChangeSet | None) -> frozenset[str]:
+    """Every path the change set touches, renames counted at both ends."""
+    if change is None:
+        return frozenset()
+    paths = set()
+    for f in change.files:
+        paths.add(f.path)
+        if f.old_path:
+            paths.add(f.old_path)
+    return frozenset(p for p in paths if not _never_counts(p))
+
+
+def _is_definition_file(family: str, rel: str) -> bool:
+    """Whether `rel` (relative to the gate scope) is in the family's definition file set."""
+    base = rel.rsplit("/", 1)[-1]
+    top = "/" not in rel
+    if family == PYTEST_GATE:
+        # pytest picks its ini file from the ancestors of its path arguments: any depth.
+        return base in PYTEST_FILES
+    if family == RUFF_GATE:
+        return base in RUFF_FILES
+    if family == MYPY_GATE:
+        return top and base in MYPY_FILES
+    if family == PYRIGHT_GATE:
+        return top and base == "pyrightconfig.json"
+    if family == SCRIPT_GATE:
+        if base == ".npmrc":
+            return top
+        if base.startswith("tsconfig") and base.endswith(".json"):
+            return True
+        return base.startswith(SCRIPT_CONFIG_PREFIXES)
+    return False
+
+
+def _executed_file(cwd: str, word: str) -> str | None:
+    """Repo-relative path that a command word names relative to cwd, if it stays in the repo."""
+    if not word or word.startswith("/"):
+        return None
+    path = posixpath.normpath(posixpath.join(cwd, word))
+    if path in (".", "..") or path.startswith("../"):
+        return None
+    if path.rsplit("/", 1)[-1] in SEMANTIC_FILES:
+        return None
+    return path
+
+
+def _definition_files_changed(cand: _Candidate, changed: frozenset[str]) -> list[str]:
+    """Changed paths that belong to the gate's definition beyond its digest (see module doc)."""
+    if not changed:
+        return []
+    gate = cand.gate
+    hits = set()
+    for path in changed:
+        if path.startswith(gate.scope):
+            rel = path[len(gate.scope) :]
+            if _is_definition_file(cand.family, rel):
+                hits.add(path)
+    if cand.family == SCRIPT_GATE and ".npmrc" in changed:
+        hits.add(".npmrc")  # the repository root .npmrc applies to every package
+    words = cand.words if cand.family != POLICY_GATE else gate.argv
+    for word in words:
+        candidates = [word]
+        if "=" in word:
+            candidates.append(word.split("=", 1)[1])
+        for w in candidates:
+            path = _executed_file(gate.cwd, w)
+            if path is not None and path in changed:
+                hits.add(path)
+    return sorted(hits)
+
+
+def _with_reason(gate: Gate, paths: list[str]) -> Gate:
+    shown = ", ".join(paths[:5])
+    if len(paths) > 5:
+        shown += f" (+{len(paths) - 5} more)"
+    return dataclasses.replace(
+        gate, definition_changed=True, source=f"{gate.source}; definition changed: {shown}"
+    )
 
 
 # --------------------------------------------------------------------------- availability
@@ -431,6 +594,7 @@ def build_inventory(
     work_tree = _Tree(repo, base, worktree=True)
     files = git.list_files_at(repo, base)
     scopes = detect_scopes(files)
+    changed_paths = _changed_paths(change)
 
     candidates = [_Candidate(g, _policy_gate_definition(g.id)) for g in policy.gates]
     taken = {(g.scope, g.kind) for g in policy.gates}
@@ -450,8 +614,14 @@ def build_inventory(
         digest = gate.definition_digest or _digest(cand.definition(base_tree, gate.scope))
         changed = _digest(cand.definition(work_tree, gate.scope)) != digest
         gate = dataclasses.replace(gate, definition_digest=digest, definition_changed=changed)
+        extra = _definition_files_changed(cand, changed_paths)
+        if extra:
+            gate = _with_reason(gate, extra)
         gates.append(_availability(gate, repo, path_env))
     gates.extend(native_gates())
 
+    duplicates = sorted(i for i, n in Counter(g.id for g in gates).items() if n > 1)
+    if duplicates:
+        raise ValueError(f"gate inventory has duplicate gate ids: {', '.join(duplicates)}")
     gates.sort(key=lambda g: (g.scope, KIND_ORDER.index(g.kind), g.id))
     return Inventory(gates=tuple(gates), scopes=scopes)

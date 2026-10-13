@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from repomarshal import git, inventory
 from repomarshal.inventory import build_inventory
 from repomarshal.model import KIND_ORDER, Cost, GateKind, Policy
 from repomarshal.policy import load_policy
@@ -535,3 +536,194 @@ def test_m14_native_gates_never_change(tmp_path, bin_dir):
         if g.provider == "native":
             assert not g.definition_changed
             assert g.definition_digest is None
+
+
+# --------------------------------------------------------------------------- M14 definition files
+
+
+def _inv_c(repo, base, path_env, policy=None):
+    """Inventory with the change set relative to BASE (as the planner builds it)."""
+    policy = policy if policy is not None else load_policy(repo.root, base)
+    change = git.collect_changes(repo.root, base)
+    return build_inventory(repo.root, base, policy, path_env=str(path_env), change=change)
+
+
+BACKEND_PYTEST = ["backend:integration", "backend:unit"]
+ALL_FRONTEND = sorted(f"frontend:{k}" for k in ("lint", "typecheck", "unit", "runtime", "a11y"))
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("backend/.pytest.ini", BACKEND_PYTEST),
+        ("backend/tests/conftest.py", BACKEND_PYTEST),
+        ("backend/tests/integration/conftest.py", BACKEND_PYTEST),
+        ("backend/tox.ini", BACKEND_PYTEST),
+        ("backend/app/ruff.toml", ["backend:lint"]),
+        ("backend/app/.ruff.toml", ["backend:lint"]),
+        ("backend/mypy.ini", ["backend:typecheck"]),
+        ("backend/setup.cfg", ["backend:integration", "backend:typecheck", "backend:unit"]),
+        ("frontend/.npmrc", ALL_FRONTEND),
+        (".npmrc", ALL_FRONTEND),
+        ("frontend/eslint.config.js", ALL_FRONTEND),
+        ("frontend/src/.eslintrc.json", ALL_FRONTEND),
+        ("frontend/tsconfig.json", ALL_FRONTEND),
+        ("frontend/tsconfig.build.json", ALL_FRONTEND),
+        ("frontend/vitest.config.ts", ALL_FRONTEND),
+        ("frontend/e2e/playwright.config.ts", ALL_FRONTEND),
+        ("frontend/.babelrc", ALL_FRONTEND),
+    ],
+)
+def test_m14_tool_config_file_added(tmp_path, bin_dir, path, expected):
+    repo, base = _webapp(tmp_path)
+    repo.write(path, "x = 1\n")
+    inv = _inv_c(repo, base, bin_dir)
+    assert _changed(inv) == expected
+    for gate_id in expected:
+        assert _by_id(inv)[gate_id].source.endswith(f"; definition changed: {path}")
+
+
+def test_m14_tool_config_modified_deleted_and_renamed(tmp_path, bin_dir):
+    repo, _ = _webapp(tmp_path)
+    repo.write("frontend/tsconfig.json", '{"compilerOptions": {"strict": true}}\n')
+    repo.write("backend/tests/conftest.py", "import pytest\n")
+    base = repo.commit("configs")
+    assert _changed(_inv_c(repo, base, bin_dir)) == []
+
+    repo.write("frontend/tsconfig.json", '{"compilerOptions": {"strict": false}}\n')
+    assert _changed(_inv_c(repo, base, bin_dir)) == ALL_FRONTEND
+
+    repo.delete("frontend/tsconfig.json")
+    assert _changed(_inv_c(repo, base, bin_dir)) == ALL_FRONTEND
+
+    # Renamed out of the definition set: the old path still counts.
+    repo.write("frontend/tsconfig.json", '{"compilerOptions": {"strict": true}}\n')
+    repo.git("mv", "backend/tests/conftest.py", "backend/tests/helpers_conftest.py")
+    change = git.collect_changes(repo.root, base)
+    assert any(f.old_path == "backend/tests/conftest.py" for f in change.files)
+    assert _changed(_inv_c(repo, base, bin_dir)) == BACKEND_PYTEST
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "frontend/src/components/LoginForm.tsx",
+        "backend/app/auth/refresh.py",
+        "backend/tests/test_refresh.py",
+        "frontend/node_modules/pkg/tsconfig.json",
+        "frontend/node_modules/.bin/eslint.config.js",
+        ".repomarshal/conftest.py",
+        "docs/tsconfig.json",  # outside the frontend scope
+        "backend/sub/mypy.ini",  # mypy reads its config from the cwd only
+        "frontend/.npmrc.bak",
+    ],
+)
+def test_m14_ordinary_edits_are_not_definition_changes(tmp_path, bin_dir, path):
+    repo, base = _webapp(tmp_path)
+    repo.write(path, "x = 1\n")
+    assert _changed(_inv_c(repo, base, bin_dir)) == []
+
+
+def test_m14_dependency_bump_still_semantic(tmp_path, bin_dir):
+    repo, base = _webapp(tmp_path)
+    repo.write("frontend/package.json", _package_json(FRONTEND_SCRIPTS, dependencies={"r": "1"}))
+    repo.write("backend/pyproject.toml", PYPROJECT.replace("0.110.0", "0.111.0"))
+    assert _changed(_inv_c(repo, base, bin_dir)) == []
+
+
+def test_m14_pyright_config_file(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("pyproject.toml", '[project]\nname = "x"\n[tool.pyright]\nstrict = ["."]\n')
+    base = repo.commit()
+    repo.write("pyrightconfig.json", '{"exclude": ["**"]}\n')
+    assert _changed(_inv_c(repo, base, bin_dir)) == ["root:typecheck"]
+
+
+def test_m14_script_executes_edited_repo_file(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    scripts = {
+        "lint": "eslint --config=tools/lint.cjs .",
+        "test": "node scripts/test.js && ./tools/check.sh",
+        "pretypecheck": "sh ../outside.sh",
+        "typecheck": "tsc --noEmit -p 'cfg/types.json'",
+    }
+    repo.write("web/package.json", _package_json(scripts))
+    for f in ("scripts/test.js", "tools/check.sh", "tools/lint.cjs", "cfg/types.json", "a.js"):
+        repo.write(f"web/{f}", "// base\n")
+    repo.write("outside.sh", "exit 1\n")
+    base = repo.commit()
+
+    repo.write("web/a.js", "// edited\n")  # not named by any script
+    repo.write("outside.sh", "exit 0\n")  # pretypecheck runs ../outside.sh: inside the repo
+    assert _changed(_inv_c(repo, base, bin_dir)) == ["web:typecheck"]
+
+    repo.git("checkout", "--", "outside.sh")
+    repo.write("web/scripts/test.js", "process.exit(0)\n")
+    inv = _inv_c(repo, base, bin_dir)
+    assert _changed(inv) == ["web:unit"]
+    assert _by_id(inv)["web:unit"].source == (
+        "web/package.json#scripts.test; definition changed: web/scripts/test.js"
+    )
+
+    repo.git("checkout", "--", "web/scripts/test.js")
+    repo.delete("web/tools/check.sh")
+    repo.write("web/tools/lint.cjs", "module.exports = {}\n")
+    repo.write("web/cfg/types.json", "{}\n")
+    assert _changed(_inv_c(repo, base, bin_dir)) == ["web:lint", "web:typecheck", "web:unit"]
+
+
+def test_m14_unparsable_script_falls_back_to_whitespace(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("package.json", _package_json({"test": "node run.js 'unterminated"}))
+    repo.write("run.js", "// base\n")
+    base = repo.commit()
+    repo.write("run.js", "process.exit(0)\n")
+    assert _changed(_inv_c(repo, base, bin_dir)) == ["root:unit"]
+
+
+def test_m14_policy_gate_executes_edited_repo_file(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write(
+        "repomarshal.toml",
+        'version = 1\n[gates.check]\nkind = "unit"\nscope = "backend/"\n'
+        'argv = ["./scripts/check.sh", "--strict"]\n'
+        '[gates.other]\nkind = "lint"\nargv = ["bandit", "-r", "app"]\n',
+    )
+    repo.write("backend/scripts/check.sh", "exit 1\n")
+    repo.write("backend/app/x.py", "x = 1\n")
+    base = repo.commit()
+    repo.write("backend/app/x.py", "x = 2\n")
+    assert _changed(_inv_c(repo, base, bin_dir)) == []
+    repo.write("backend/scripts/check.sh", "exit 0\n")
+    inv = _inv_c(repo, base, bin_dir)
+    assert _changed(inv) == ["check"]
+    assert _by_id(inv)["check"].source.endswith("; definition changed: backend/scripts/check.sh")
+
+
+def test_m14_without_change_set_only_digests_count(tmp_path, bin_dir):
+    repo, base = _webapp(tmp_path)
+    repo.write("frontend/tsconfig.json", "{}\n")
+    assert _changed(_inv(repo, base, bin_dir)) == []  # change=None: legacy behaviour
+
+
+# --------------------------------------------------------------------------- gate ids
+
+
+def test_subdirectory_named_root_gets_distinct_ids(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    scripts = {"lint": "eslint .", "test": "jest"}
+    repo.write("package.json", _package_json(scripts))
+    repo.write("Root/package.json", _package_json(scripts))
+    base = repo.commit()
+    ids = {g.id for g in _inv(repo, base, bin_dir).gates if g.provider == "command"}
+    assert ids == {"root:lint", "root:unit", "Root/:lint", "Root/:unit"}
+
+
+def test_duplicate_gate_ids_raise(tmp_path, bin_dir, monkeypatch):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("package.json", _package_json({"lint": "eslint ."}))
+    repo.write("root/package.json", _package_json({"lint": "eslint ."}))
+    base = repo.commit()
+    monkeypatch.setattr(inventory, "_scope_name", lambda scope: scope[:-1] if scope else "root")
+    with pytest.raises(ValueError, match="duplicate gate ids: root:lint"):
+        _inv(repo, base, bin_dir)
