@@ -276,6 +276,28 @@ def test_python_dedicated_files_and_setup_cfg(tmp_path, bin_dir):
     assert "pr:unit" not in g and "lib:lint" not in g
 
 
+def test_pytest_toml_is_a_gate_source_with_pytest_precedence(tmp_path, bin_dir):
+    # pytest >= 9: pytest.toml / .pytest.toml ([pytest] table) beat every other config file.
+    repo = GitRepo(tmp_path / "r")
+    repo.write("svc/pytest.toml", "[pytest]\naddopts = ['-q']\n")
+    repo.write("svc/pyproject.toml", '[tool.pytest.ini_options]\naddopts = "-x"\n')
+    repo.write("hid/.pytest.toml", "[pytest]\n")
+    repo.write("ini/.pytest.ini", "[pytest]\n")
+    base = repo.commit()
+    g = _by_id(_inv(repo, base, bin_dir))
+    assert g["svc:unit"].source == "svc/pytest.toml"
+    assert g["hid:unit"].source == "hid/.pytest.toml"
+    assert g["ini:unit"].source == "ini/.pytest.ini"
+    assert inventory.detect_scopes(("a/pytest.toml", "b/.pytest.toml")) == ("a/", "b/")
+
+
+def test_m14_pytest_toml_added_changes_the_definition_digest(tmp_path, bin_dir):
+    # Even without a change set, the worktree definition now resolves to pytest.toml.
+    repo, base = _webapp(tmp_path)
+    repo.write("backend/pytest.toml", '[pytest]\naddopts = ["-k", "not expired"]\n')
+    assert _changed(_inv(repo, base, bin_dir)) == ["backend:integration", "backend:unit"]
+
+
 def test_unit_from_tests_dir_without_pytest_config(tmp_path, bin_dir):
     repo = GitRepo(tmp_path / "r")
     repo.write("pyproject.toml", '[project]\nname = "x"\n')
@@ -556,6 +578,8 @@ ALL_FRONTEND = sorted(f"frontend:{k}" for k in ("lint", "typecheck", "unit", "ru
     ("path", "expected"),
     [
         ("backend/.pytest.ini", BACKEND_PYTEST),
+        ("backend/pytest.toml", BACKEND_PYTEST),
+        ("backend/tests/.pytest.toml", BACKEND_PYTEST),
         ("backend/tests/conftest.py", BACKEND_PYTEST),
         ("backend/tests/integration/conftest.py", BACKEND_PYTEST),
         ("backend/tox.ini", BACKEND_PYTEST),
