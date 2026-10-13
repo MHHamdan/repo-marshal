@@ -4,7 +4,7 @@ _Last updated: 2026-10-13_
 
 ## Current phase
 
-**Phases 3 (Architecture) and 4 (Threat Model) are complete. Phase 5 (MVP Decision, MISSION.md §66) is next.** The owner asked for Phases 3, 4 and 5
+**Phases 1–5 are complete. Phase 6 (the vertical slice, MISSION.md §67) is next.** The owner asked for Phases 3, 4 and 5
 together, then the start of Phase 6. Phases 1–2 are complete: see `docs/research/`,
 `docs/product-definition.md` and `LICENSE` (Apache-2.0).
 
@@ -19,16 +19,23 @@ Done in Phase 3:
   **Phase 3 is complete.**
 - `docs/security/threat-model.md`: 17 threats ranked by likelihood × impact, with the coding agent
   as the main adversary, and v0.1 mitigations separated from later ones. **Phase 4 is complete.**
+- `docs/roadmap.md`: v0.1 MUST items M1–M13 (only what the §42 demo needs), then SHOULD / MAY /
+  NOT NOW. **Phase 5 is complete.**
 
 ## Next step
 
-Write `docs/roadmap.md` (Phase 5) with MUST / SHOULD / MAY / NOT NOW.
-- MUST is only what the MISSION.md §42 demo needs end to end: `plan` and `done` on a fixture repo,
-  covering Scenarios A (docs), B (frontend) and C (auth).
-- The SHOULD order comes from the end of the threat model: `gates.definition_changed`, test-tamper
-  signals, the CI recipe, the SkillSpector adapter, AgentProof.
+Phase 6: build roadmap items M1–M13 as the thinnest slice. Order:
+1. Scaffold: `pyproject.toml` (Python ≥ 3.11, zero runtime deps, dev deps pytest + jsonschema + ruff),
+   `src/repomarshal/`, console script `repomarshal`.
+2. `model.py` and `git.py` (M1, M2), with tests against temporary git repos.
+3. `inventory.py` and `policy.py` (M3, M4).
+4. `signals.py` and `planner.py` (M5, M6, M8, M9), with the `tests/fixtures/webapp` template plus
+   scenario tests A, B and C.
+5. `cli.py plan` (M10).
+6. `runner.py`, `verdict.py`, `evidence.py`, native gates and `done` (M7, M11).
+7. Schemas (M12) and the honesty tests (M13).
 
-Then tell the owner that Phase 5 is done, so they can merge to main, and start Phase 6.
+Commit each module together with its tests, and push after each commit.
 
 ## Upstream repos inspected
 
