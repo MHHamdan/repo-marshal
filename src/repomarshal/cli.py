@@ -12,6 +12,103 @@ Human output ends `done` with the advisory line from EvidenceRecord.advisory.
 
 from __future__ import annotations
 
+import argparse
+import json
+import sys
+import traceback
+
+from repomarshal import __version__, api, render
+from repomarshal.model import (
+    EXIT_INTERNAL_ERROR,
+    EvidenceRecord,
+    GitError,
+    NotAGitRepository,
+    PolicyInvalid,
+    Verdict,
+    to_dict,
+)
+
+
+def _parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="repomarshal",
+        description="Compile a repository change into an explained plan, then verify it.",
+    )
+    p.add_argument("--version", action="version", version=f"repomarshal {__version__}")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    pl = sub.add_parser("plan", help="show the Change Plan for the current change")
+    pl.add_argument("task", nargs="?", default=None, help="task description (untrusted; add-only)")
+    pl.add_argument("--repo", default=".", help="repository path (default: .)")
+    pl.add_argument("--base", default=None, help="BASE revision (default: auto)")
+    pl.add_argument("--json", action="store_true", help="machine-readable output")
+    pl.add_argument("--explain", action="store_true", help="every reason for every gate")
+
+    dn = sub.add_parser("done", help="run the required gates and return a completion verdict")
+    dn.add_argument("--task", default=None, help="task description (untrusted; add-only)")
+    dn.add_argument("--repo", default=".", help="repository path (default: .)")
+    dn.add_argument("--base", default=None, help="BASE revision (default: auto)")
+    dn.add_argument("--json", action="store_true", help="machine-readable output")
+    dn.add_argument("--dry-run", action="store_true", help="list the gates; run nothing")
+    return p
+
 
 def main(argv: list[str] | None = None) -> int:
-    raise NotImplementedError
+    args = _parser().parse_args(argv)
+    try:
+        if args.command == "plan":
+            return _plan(args)
+        return _done(args)
+    except (PolicyInvalid, GitError, NotAGitRepository) as e:
+        errors = e.errors if isinstance(e, PolicyInvalid) else [str(e)]
+        if getattr(args, "json", False):
+            print(
+                json.dumps(
+                    {
+                        "verdict": Verdict.BLOCKED.value,
+                        "reasons": errors,
+                        "evidence_path": None,
+                        "record": None,
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            print("BLOCKED", file=sys.stderr)
+            for err in errors:
+                print(f"  - {err}", file=sys.stderr)
+        return Verdict.BLOCKED.exit_code
+    except Exception:  # noqa: BLE001 - internal errors must never look like PASS
+        traceback.print_exc()
+        print("repomarshal: internal error (exit 4)", file=sys.stderr)
+        return EXIT_INTERNAL_ERROR
+
+
+def _plan(args: argparse.Namespace) -> int:
+    p = api.plan(args.repo, task=args.task, base=args.base)
+    if args.json:
+        print(json.dumps(to_dict(p), indent=2))
+    else:
+        print(render.plan_text(p, explain=args.explain))
+    return 0
+
+
+def _done(args: argparse.Namespace) -> int:
+    r = api.done(args.repo, task=args.task, base=args.base, dry_run=args.dry_run)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "verdict": r.verdict.value,
+                    "reasons": list(r.reasons),
+                    "evidence_path": str(r.evidence_path) if r.evidence_path else None,
+                    "record": to_dict(r.record) if r.record else None,
+                    "would_run": list(r.would_run),
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(render.done_text(r))
+        print(f"\n{EvidenceRecord.advisory}")
+    return r.verdict.exit_code

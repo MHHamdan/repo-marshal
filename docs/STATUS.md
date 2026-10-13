@@ -13,16 +13,19 @@ in its own git worktree with its own branch.
 
 | Agent | Branch | Items | Owns | Status |
 |---|---|---|---|---|
-| git | `slice/git` | M1, M2 | `src/repomarshal/git.py`, `tests/unit/test_git.py` | not started |
-| inventory | `slice/inventory` | M3, M4, M14 | `inventory.py`, `policy.py`, `tests/unit/test_inventory.py`, `tests/unit/test_policy.py` | not started |
-| planner | `slice/planner` | M5, M6, M7 | `signals.py`, `decisions.py`, `native.py` (run_* only), `tests/unit/test_signals.py`, `test_decisions.py`, `test_native.py` | not started |
-| context | `slice/context` | M8, M9 | `context.py`, `skills.py`, `tests/unit/test_context.py`, `test_skills.py` | not started |
-| fixture | `slice/fixture` | M13 | `tests/fixtures/**`, `tests/acceptance/**` | not started |
+| git | `slice/git` | M1, M2 | `src/repomarshal/git.py`, `tests/unit/test_git.py` | in progress |
+| inventory | `slice/inventory` | M3, M4, M14 | `inventory.py`, `policy.py`, `tests/unit/test_inventory.py`, `tests/unit/test_policy.py` | in progress |
+| planner | `slice/planner` | M5, M6, M7 | `signals.py`, `decisions.py`, `native.py` (run_* only), `tests/unit/test_signals.py`, `test_decisions.py`, `test_native.py` | in progress |
+| context | `slice/context` | M8, M9 | `context.py`, `skills.py`, `tests/unit/test_context.py`, `test_skills.py` | in progress |
+| fixture | `slice/fixture` | M13 | `tests/fixtures/**`, `tests/acceptance/**` | in progress |
 
 The lead owns `model.py`, the schemas, `planner.py`, `runner.py`, `verdict.py`, `evidence.py`,
 `api.py`, `cli.py` and `tests/helpers.py`.
 
 Done:
+- The lead's modules are committed with unit tests: `runner.py` and `verdict.py` (fail-closed),
+  plus `planner.compile_plan`, `api.plan` / `api.done`, `evidence.py`, `cli.py` and `render.py`.
+  They are wired to the agent modules, so they work end to end once those are merged.
 - The contract is committed: `pyproject.toml` (stdlib-only core; dev deps pytest, jsonschema and
   ruff), `src/repomarshal/model.py` (IR dataclasses), JSON Schemas (M12), interface stubs with the
   behaviour spec in each docstring, `tests/helpers.py` and `tests/unit/test_contract.py`.
