@@ -54,9 +54,41 @@ def test_docs_changed(path):
     assert "docs.changed" in ids(cs(f(path)))
 
 
-@pytest.mark.parametrize("path", ["requirements.txt", "notes.txt.bak", "src/app.py"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "requirements.txt",
+        "notes.txt.bak",
+        "src/app.py",
+        "frontend/src/docs/messages.json",
+        "docs/conf.py",
+        "doc/data.yaml",
+        "src/logo.png",
+    ],
+)
 def test_not_docs(path):
     assert "docs.changed" not in ids(cs(f(path)))
+
+
+@pytest.mark.parametrize(
+    "path", ["docs/notes.txt", "doc/img/arch.svg", "docs/shot.jpg", "pkg/README", "x/CHANGELOG"]
+)
+def test_docs_formats(path):
+    s = ids(cs(f(path)))
+    assert set(s) == {"docs.changed"}
+
+
+def test_non_doc_file_under_docs_goes_through_the_normal_rules():
+    s = ids(cs(f("frontend/src/docs/messages.json"), f("docs/conf.py")))
+    assert s["coverage.unclassified"] == ("frontend/src/docs/messages.json",)
+    assert s["code.changed"] == ("docs/conf.py",)
+    assert "docs.changed" not in s
+
+
+def test_mdx_is_code_and_frontend():
+    s = ids(cs(f("frontend/src/pages/help.mdx")))
+    assert {"code.changed", "frontend.ui", "docs.changed"} <= set(s)
+    assert "security.auth_path" in ids(cs(f("app/auth/login.mdx")))  # not exempt as docs
 
 
 @pytest.mark.parametrize(
@@ -119,7 +151,28 @@ def test_security_auth_path(path, expected):
 
 def test_auth_path_matches_old_path_of_rename():
     s = ids(cs(f("app/misc/x.py", R, old_path="app/auth/x.py")))
-    assert s["security.auth_path"] == ("app/misc/x.py",)
+    assert s["security.auth_path"] == ("app/auth/x.py", "app/misc/x.py")
+
+
+def test_rename_lists_both_paths_in_every_signal():
+    s = ids(cs(f("frontend/src/routes.py", R, old_path="backend/app/api/routes.py")))
+    assert s["code.changed"] == ("backend/app/api/routes.py", "frontend/src/routes.py")
+    assert "coverage.unclassified" not in s
+
+
+def test_rename_unclassified_when_either_path_matches_no_rule():
+    # The old path matched nothing: the new docs path must not make the move docs-only.
+    s = ids(cs(f("docs/notes.md", R, old_path="backend/app/data.xyz")))
+    assert s["coverage.unclassified"] == ("backend/app/data.xyz", "docs/notes.md")
+    assert s["docs.changed"] == ("backend/app/data.xyz", "docs/notes.md")
+    s = ids(cs(f("backend/app/data.xyz", R, old_path="docs/notes.md")))
+    assert s["coverage.unclassified"] == ("backend/app/data.xyz", "docs/notes.md")
+
+
+def test_rename_custom_rule_matches_old_path():
+    policy = Policy(signals=(SignalRuleSpec("custom.pay", "security", Risk.ELEVATED, ("pay/**",)),))
+    s = ids(cs(f("misc/a.py", R, old_path="pay/a.py")), policy)
+    assert s["custom.pay"] == ("misc/a.py", "pay/a.py")
 
 
 def test_auth_path_is_elevated():
@@ -144,6 +197,22 @@ def test_sensitive_identifier_added_code_lines_only():
         x for x in sig.evaluate_signals(NOWHERE, cs(hit), Policy()) if x.id.endswith("identifier")
     ]
     assert s.risk is Risk.STANDARD
+
+
+@pytest.mark.parametrize("flag", ["binary", "truncated"])
+def test_sensitive_identifier_fails_closed_on_hidden_added_lines(flag):
+    hidden = f("backend/app/big.py", A, added=("x = 1",), **{flag: True})
+    (s,) = [
+        x
+        for x in sig.evaluate_signals(NOWHERE, cs(hidden), Policy())
+        if x.id == "security.sensitive_identifier"
+    ]
+    assert s.files == ("backend/app/big.py",)
+    assert f"backend/app/big.py: added lines not fully visible ({flag})" in s.detail
+    # not for tests or non-code files
+    assert "security.sensitive_identifier" not in ids(
+        cs(f("backend/tests/test_big.py", A, **{flag: True}), f("img/a.png", A, **{flag: True}))
+    )
 
 
 def test_policy_self_modified():
