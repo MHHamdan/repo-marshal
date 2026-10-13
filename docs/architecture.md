@@ -160,7 +160,7 @@ segment, extension or glob), its status, and its added or removed lines.
 | `code.changed` | Source extensions (`.py .ts .tsx .js .jsx .go .rs .java .rb …`) | code | standard |
 | `frontend.ui` | `.tsx .jsx .vue .svelte .css .scss .html`, or a `components/` path segment | frontend | standard |
 | `tests.changed` | Test files (`test_*.py`, `*_test.py`, `*.test.*`, `*.spec.*`, `tests/`, `__tests__/`) | tests | standard |
-| `security.auth_path` | A directory segment or file stem in {auth, oauth, login, session, sessions, token, tokens, security, crypto, permissions, acl} | security | **elevated** |
+| `security.auth_path` | A directory segment or file stem in {auth, oauth, login, session, sessions, token, tokens, security, crypto, permissions, acl}. Docs, stylesheets and images are exempt (`login.css` is not auth logic) | security | **elevated** |
 | `security.sensitive_identifier` | Added code lines (not tests) matching `password\|secret\|token\|jwt\|bearer\|private_key\|hmac` | security | standard |
 | `dependency.changed` | Lockfiles, `requirements*.txt`, or dependency sections of package.json / pyproject that differ between BASE and the worktree | dependencies | standard |
 | `build.config_changed` | Non-dependency edits to manifests, `tsconfig*`, `*.config.{js,ts,mjs}`, `Makefile`, `setup.cfg`, `tox.ini` | build | standard |
@@ -183,7 +183,7 @@ compile(change, inventory, policy, task):
   for f in change.files:
      hits = [r for r in CATALOGUE + policy.rules if r.matches(f)]
      S += hits or [Signal("coverage.unclassified", f)]
-  S += task_signals(task)                       # keyword map; can only ADD (task.* ids, forecast domains)
+  if not change.files: S = task_signals(task)   # forecast only; binding plans use the diff alone
   risk    = max(s.risk for s in S, default=low)
   widen   = any(s.id in WIDENING for s in S)     # build.config_changed, ci.changed, coverage.unclassified,
                                                  #   agent.config_changed, policy.self_modified, tests.deleted

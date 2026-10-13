@@ -140,7 +140,11 @@ def test_uncommitted_policy_removal_does_not_apply(configured_webapp):
     res = w.done()
     assert w.ran("bandit"), "the BASE security gate must still run"
     assert res.record is not None
-    assert result(res.record, "security").status == ResultStatus.PASS
+    # The BASE gate ran, but its definition was removed in this change (M14): the local result
+    # cannot be trusted, so it is UNKNOWN and the verdict cannot be PASS.
+    sec = result(res.record, "security")
+    assert sec.status == ResultStatus.UNKNOWN and "definition changed" in sec.reason
+    assert res.verdict != Verdict.PASS
 
 
 def test_uncommitted_policy_override_does_not_apply(configured_webapp):

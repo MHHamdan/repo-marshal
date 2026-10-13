@@ -22,12 +22,12 @@ def compile_plan(
     pol = policy.load_policy(root, base_sha)
     change = git.collect_changes(root, base_sha)
     inv = inventory.build_inventory(root, base_sha, pol, path_env=path_env)
-    sigs = tuple(
-        sorted(
-            signals.evaluate_signals(root, change, pol) + signals.task_signals(task),
-            key=lambda s: s.id,
-        )
-    )
+    # A binding plan is compiled from the diff alone. Task text only shapes a forecast (no diff
+    # yet); in a binding plan it is recorded in `task` but never decides gates, risk or skills.
+    # It therefore cannot remove a requirement in either mode (ADR-005).
+    diff_signals = signals.evaluate_signals(root, change, pol)
+    chosen = diff_signals if change.files else signals.task_signals(task)
+    sigs = tuple(sorted(chosen, key=lambda s: s.id))
     risk = decisions.assess_risk(sigs)
     gate_decisions = decisions.decide_gates(sigs, inv, change)
     doms = decisions.domains_of(sigs)

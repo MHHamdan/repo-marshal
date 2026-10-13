@@ -25,8 +25,12 @@ change that tries to shrink its own plan, and useful without configuration.
     `agent.config_changed`, `policy.self_modified`, `tests.deleted`) apply the plan to all scopes.
   - A file no rule recognises can never shrink the plan.
 - **Untrusted inputs can only add.**
-  - Task text maps keywords to `task.*` signals that add requirements or forecast domains. Nothing
-    in task text can skip a gate.
+  - In a **forecast** plan (no diff yet), task text maps keywords to `task.*` signals that set the
+    forecast domains and gates.
+  - In a **binding** plan, the task text is recorded but decides nothing. Signals, risk, gates and
+    skills come from the diff alone. A task's wording (for example "login form") therefore cannot
+    inflate the plan, and nothing in task text can skip a gate in either mode.
+    (Decided 2026-10-13, during v0.1 integration.)
   - Policy and gate definitions are read from BASE.
 - **Classification is deterministic** (MISSION.md §11). No LLM in v0.1. Optional model-assisted
   classification later must be opt-in, labelled, and add-only.
