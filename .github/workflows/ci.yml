@@ -1,0 +1,94 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Git identity for fixture commits
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI"
+      - name: Test
+        run: python -m pytest -o addopts="" -q
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: ruff check
+        run: ruff check src tests
+      - name: ruff format
+        run: ruff format --check src tests
+
+  dogfood:
+    # The authoritative verdict: re-run `repomarshal done` where the coding agent cannot write.
+    # No secrets are used here: the gates execute the PR's own code.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install RepoMarshal and the tools its gates need (ruff, pytest)
+        run: python -m pip install -e ".[dev]"
+      - name: Git identity for fixture commits
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI"
+      - name: repomarshal done
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set +e
+          repomarshal done --base "$BASE_SHA" --json > repomarshal-done.json
+          code=$?
+          set -e
+          cat repomarshal-done.json
+          echo "repomarshal done exit code: $code (0 PASS, 1 FAIL, 2 UNKNOWN, 3 BLOCKED, 4 error)"
+          exit "$code"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: repomarshal-evidence
+          path: |
+            repomarshal-done.json
+            .repomarshal/evidence/
+          if-no-files-found: warn
+          retention-days: 30
