@@ -46,10 +46,10 @@ and ADRs 001–005.
 
 ## Open questions / blockers
 
-- **No git remote is configured** in the cloud checkout (`git remote -v` is empty),
-  so commits cannot be pushed from this session. Work is committed locally on
-  `claude/phase1-research`. The user must add the remote, or push this branch
-  from a session where `MHHamdan/repo-marshal` is attached.
+- Resolved: the cloud checkout started with no git remote. `MHHamdan/repo-marshal` is now
+  attached with push access, `origin` is added, and `claude/phase1-research` is pushed. The
+  commits were rebased onto `origin/main` and their author reset to the owner identity, as
+  required by the commit-identity check.
 - The GitHub REST API and github.com issue pages return 403 from this environment,
   so upstream **issues, releases pages and star counts were not inspected** via
   GitHub. Git tags were inspected instead.
