@@ -35,6 +35,20 @@ cd /path/to/your/repo
 `plan --json` and `done --json` emit output that matches the schemas in `src/repomarshal/schemas/`.
 `plan --explain` prints every reason for every gate.
 
+### With a coding agent, and in CI
+
+- **Claude Code:** `repomarshal init --print claude-code` prints a Stop-hook snippet for
+  `.claude/settings.json`. The hook runs `repomarshal done --hook claude-code`. Any verdict other
+  than PASS, and any error, blocks the stop. The agent gets the failing or unknown gates as
+  feedback.
+- **Any MCP client:** `pip install "repomarshal[mcp]"`, then register `repomarshal mcp` as a stdio
+  server. Tools: `repomarshal_plan`, `repomarshal_done` and `repomarshal_explain`. Each takes an
+  explicit `repo_path`.
+- **CI, the authoritative verdict:** see [`docs/guides/ci.md`](docs/guides/ci.md). Run
+  `repomarshal done --base <PR base sha>` where the agent cannot write.
+- **`repomarshal doctor`:** reports the detected gates, the policy, and the optional providers.
+  `repomarshal init` writes a commented `repomarshal.toml` and touches nothing else.
+
 ## Example: three changes, three plans
 
 This is real output on the repository's test fixture (`tests/fixtures/webapp`: a React frontend and a
@@ -142,7 +156,9 @@ See [`docs/security/threat-model.md`](docs/security/threat-model.md).
 |---|---|
 | Command gates (package.json scripts, ruff, mypy, pyright, pytest, `[gates.*]`) | Supported |
 | Native docs-links and secrets-diff baseline checks | Supported |
-| MCP server, Claude Code Stop hook | Planned |
+| Claude Code Stop hook (`repomarshal done --hook claude-code`) | Supported; tested against recorded hook payloads |
+| MCP stdio server (`pip install "repomarshal[mcp]"`, `repomarshal mcp`) | Supported (MCP 2026-07-28, with 2025-11-25 fallback) |
+| Hook and MCP config snippets for Codex, Cursor, Copilot and Gemini (`repomarshal init --print <host>`) | Experimental: printed only, untested on those hosts |
 | NVIDIA SkillSpector (skill audit), Playwright JSON reporter (runtime) | Planned |
 | Reticle, AgentProof, Chisel spec reader, UI Skills, UI/UX Pro Max | Planned (optional) |
 
@@ -151,8 +167,8 @@ UNAVAILABLE, and the verdict is never PASS.
 
 ## Roadmap
 
-See [`docs/roadmap.md`](docs/roadmap.md). Next up: test-tamper signals, the remaining catalogue
-signals, a CI recipe, `init`/`doctor`, the Claude Code Stop hook and the MCP server.
+See [`docs/roadmap.md`](docs/roadmap.md). Next up: the remaining catalogue signals, the SkillSpector
+and Playwright adapters, more inventory sources, and evidence chaining.
 
 ## Development
 

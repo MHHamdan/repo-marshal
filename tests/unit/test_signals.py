@@ -866,3 +866,37 @@ def test_command_narrowing_parses_runner_options():
     }
     assert sig.command_narrowing("npm ci && npx jest -t login") == {("-t", "login"): 1}
     assert sig.command_narrowing("eslint -m x") == {}
+
+
+# --------------------------------------------------------------------------- ci / agent config
+
+
+def _ids_for(path: str, status=FileStatus.MODIFIED) -> set[str]:
+    change = ChangeSet(
+        base=None,
+        head=None,
+        tree_digest="0" * 40,
+        files=(ChangedFile(path, status, added=("x",)),),
+        uncommitted=True,
+    )
+    return {s.id for s in sig.evaluate_signals(Path("."), change, Policy())}
+
+
+def test_ci_changed_fires_for_ci_config():
+    for p in (".github/workflows/ci.yml", ".gitlab-ci.yml", ".circleci/config.yml"):
+        assert "ci.changed" in _ids_for(p), p
+    assert "ci.changed" not in _ids_for("docs/ci.md")
+    assert "ci.changed" in sig.WIDENING
+
+
+def test_agent_config_changed_fires_for_agent_files():
+    for p in (
+        "AGENTS.md",
+        "backend/CLAUDE.md",
+        ".claude/settings.json",
+        ".mcp.json",
+        ".cursor/rules/x.mdc",
+        ".github/copilot-instructions.md",
+    ):
+        assert "agent.config_changed" in _ids_for(p), p
+    assert "agent.config_changed" not in _ids_for("docs/agents.md")

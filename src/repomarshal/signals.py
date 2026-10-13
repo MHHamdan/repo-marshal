@@ -92,7 +92,6 @@ WIDENING: frozenset[str] = frozenset(
         "build.config_changed",
         "coverage.unclassified",
         "policy.self_modified",
-        # reserved for SHOULD signals, accepted if present:
         "ci.changed",
         "agent.config_changed",
         "tests.deleted",
@@ -231,6 +230,37 @@ TOML_DEPENDENCY_KEYS: dict[str, tuple[str, ...]] = {
         "target.*.build-dependencies",
     ),
 }
+
+# ci.changed: CI configuration (an agent narrowing or disabling CI is a T4 threat).
+CI_PREFIXES = (".github/workflows/", ".circleci/", ".buildkite/", ".gitlab/ci/")
+CI_FILES = frozenset({".gitlab-ci.yml", "Jenkinsfile", "azure-pipelines.yml", ".travis.yml"})
+
+# agent.config_changed: agent instructions, settings and hooks (an agent removing its own stop
+# hook or rewriting its instructions is a T4/T7 threat). Matched at any depth for the
+# instruction files, at the root for the settings directories.
+AGENT_FILES = frozenset({"AGENTS.md", "CLAUDE.md", "GEMINI.md", ".mcp.json"})
+AGENT_PREFIXES = (
+    ".claude/",
+    ".cursor/",
+    ".codex/",
+    ".gemini/",
+    ".agents/",
+    ".github/instructions/",
+)
+AGENT_ROOT_FILES = frozenset({".github/copilot-instructions.md", ".cursorrules"})
+
+
+def _is_ci(path: str) -> bool:
+    return path.startswith(CI_PREFIXES) or path in CI_FILES
+
+
+def _is_agent_config(path: str) -> bool:
+    return (
+        path.rsplit("/", 1)[-1] in AGENT_FILES
+        or path.startswith(AGENT_PREFIXES)
+        or path in AGENT_ROOT_FILES
+    )
+
 
 # policy.self_modified: the policy file at the repository root.
 POLICY_PATH = "repomarshal.toml"
@@ -1040,6 +1070,20 @@ CATALOGUE: tuple[Rule, ...] = (
         Risk.ELEVATED,
         f"{POLICY_PATH} changed; the change cannot alter its own plan (policy is read at BASE)",
         _each_path(lambda p: p == POLICY_PATH),
+    ),
+    Rule(
+        "ci.changed",
+        "ci",
+        Risk.ELEVATED,
+        "CI configuration changed; CI is where the authoritative verdict runs",
+        _each_path(_is_ci),
+    ),
+    Rule(
+        "agent.config_changed",
+        "agent-config",
+        Risk.ELEVATED,
+        "agent instructions, settings, hooks or MCP config changed",
+        _each_path(_is_agent_config),
     ),
     _tamper_rule(
         "tests.deleted",

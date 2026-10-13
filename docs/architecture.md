@@ -168,7 +168,9 @@ segment, extension or glob), its status, and its added or removed lines.
 | `agent.config_changed` | `AGENTS.md`, `CLAUDE.md`, `.claude/**`, `.cursor/**`, `.mcp.json`, `.github/copilot-instructions.md` | agent-config | **elevated** |
 | `agent.skill_changed` | `**/SKILL.md` and siblings under a skill directory | agent-config | **elevated** |
 | `policy.self_modified` | `repomarshal.toml` | policy | **elevated** |
-| `tests.deleted` | A deleted test file, or removed test definitions (`def test_`, `it(`, `test(`) | tests | **elevated** |
+| `tests.deleted` | A deleted test file, or removed test definitions (`def test_`, `class Test`, `it(`, `test(`, `describe(`), not counting tests moved to another changed test file | tests | **elevated**; taints test gates (v0.2) |
+| `tests.skip_added` | Skip, xfail or focus markers added in test files (`@pytest.mark.skip`, `pytest.skip(`, `it.skip`, `xit`, `it.only`, `fdescribe`, ...) | tests | **elevated**; taints test gates (v0.2) |
+| `tests.discovery_narrowed` | Narrowed pytest/jest/vitest discovery (`testpaths`, `addopts -k`, `testPathIgnorePatterns`, ...) or narrowing flags added to scripts | tests | **elevated**; taints test gates (v0.2) |
 | `db.migration` | A `migrations/` or `alembic/versions/` path segment | data | **elevated** |
 | `coverage.unclassified` | A file that matched no rule above | unknown | standard |
 
@@ -186,7 +188,9 @@ compile(change, inventory, policy, task):
   if not change.files: S = task_signals(task)   # forecast only; binding plans use the diff alone
   risk    = max(s.risk for s in S, default=low)
   widen   = any(s.id in WIDENING for s in S)     # build.config_changed, ci.changed, coverage.unclassified,
-                                                 #   agent.config_changed, policy.self_modified, tests.deleted
+                                                 #   agent.config_changed, policy.self_modified, tests.*
+  # v0.2: a test-tamper signal TAINTS the test-running gates (unit, integration, runtime, a11y) in
+  # the scopes of its files. Tainted gates still run, but `done` reports their result as UNKNOWN.
   code_scopes = {scope(g) for g in inventory if any code/test file under scope(g)}
   if widen: code_scopes = all scopes
 

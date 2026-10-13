@@ -31,24 +31,26 @@ threat model priorities.
 - `plan` cold start is under 300 ms on the fixture (measured).
 - The three demo plans are reproduced verbatim in the README from real output.
 
+## Done in v0.2
+
+- Test-tamper signals `tests.deleted`, `tests.skip_added` and `tests.discovery_narrowed`, which taint
+  the affected gates so they report UNKNOWN (T2).
+- Catalogue signals `ci.changed` and `agent.config_changed` (T4, T7).
+- Repository CI: pytest on 3.11–3.13, ruff, the MCP extra, a dogfood `done` on PRs, and actions
+  pinned by SHA. Plus the CI recipe in `docs/guides/ci.md`.
+- `init`, `doctor`, and the fail-closed Claude Code Stop-hook shim (`done --hook claude-code`).
+- The MCP stdio server as the optional extra `repomarshal[mcp]`.
+
 ## SHOULD: next, in priority order
 
-1. **Test-tamper signals:** `tests.deleted`, `tests.skip_added`, `tests.discovery_narrowed` (T2).
-2. **Remaining catalogue signals:** `ci.changed`, `agent.config_changed`, `agent.skill_changed`,
-   `dependency.changed`, `db.migration`.
-3. **Repository CI:** lint, tests and the identity check with pinned actions. Plus a documented recipe
-   for running `repomarshal done` in a user's CI as the authoritative anchor (T4, T5, T7).
-4. **`init` and `doctor`.**
-5. **Claude Code Stop-hook shim** (`done --hook claude-code`). Snippets for the other hosts are
-   printed by `init --print`.
-6. **MCP stdio server** (`repomarshal[mcp]`): `plan`, `done`, `explain`.
-7. **SkillSpector adapter** for `skill_audit` (T9).
-8. **Playwright adapter** for `runtime` (JSON reporter; `expected == 0` → UNKNOWN).
-9. **Inventory from more sources:** `AGENTS.md ## Commands` and `Makefile` targets.
-10. **Evidence hash chain** (`prev_digest`) and a `status` command that reports STALE.
-11. **Waivers:** a recorded reason, governed by `completion.waivers_permit_pass`.
-12. **README** with real demo output and the honest boundaries from the threat model.
-13. **CI test for the startup budget.**
+1. **Remaining catalogue signals:** `agent.skill_changed`, `dependency.changed`, `db.migration`.
+2. **SkillSpector adapter** for `skill_audit` (T9).
+3. **Playwright adapter** for `runtime` (JSON reporter; `expected == 0` → UNKNOWN).
+4. **Inventory from more sources:** `AGENTS.md ## Commands` and `Makefile` targets.
+5. **Evidence hash chain** (`prev_digest`) and a `status` command that reports STALE.
+6. **Waivers:** a recorded reason, governed by `completion.waivers_permit_pass`.
+7. **CI test for the startup budget.**
+8. **Publish to PyPI**, with trusted publishing.
 
 ## MAY: after the core is proven
 

@@ -157,7 +157,7 @@ def done(
         if gate is None:
             continue  # verdict.fold reports a REQUIRED gate without a result as UNKNOWN
         result = runner.run_gate(root, gate, p.change, env)
-        if d.taint and result.status != ResultStatus.UNKNOWN:
+        if d.taint:
             # v0.2 tamper signals: the change weakens what this gate runs (deleted or skipped
             # tests, narrowed discovery). Its result cannot vouch for the change.
             result = dataclasses.replace(

@@ -18,7 +18,7 @@ lead pushes.
 | Agent | Branch | Scope | Owns | Status |
 |---|---|---|---|---|
 | ci | `v02/ci` | CI workflow, dogfood job, CI recipe | `.github/workflows/ci.yml`, `docs/guides/ci.md` | **merged**; local dogfood gives PASS |
-| tamper | `v02/tamper` | tests.deleted, tests.skip_added, tests.discovery_narrowed, each producing a taint (UNKNOWN) | `signals.py`, `decisions.py`, `tests/unit/test_signals.py`, `test_decisions.py`, `tests/acceptance/test_tamper.py` | in progress |
+| tamper | `v02/tamper` | tests.deleted, tests.skip_added, tests.discovery_narrowed, each producing a taint (UNKNOWN) | `signals.py`, `decisions.py`, `tests/unit/test_signals.py`, `test_decisions.py`, `tests/acceptance/test_tamper.py` | **merged** |
 | hosts | `v02/hosts` | `init`, `doctor`, `done --hook claude-code` | `initcmd.py`, `doctor.py`, `hooks.py`, `tests/unit/test_initcmd.py`, `test_doctor.py`, `test_hooks.py`, `tests/fixtures/hooks/**` | **merged** |
 | mcp | `v02/mcp` | the `repomarshal[mcp]` stdio server (plan, done, explain) | `mcp_server.py`, `tests/unit/test_mcp_server.py`, `pyproject.toml` (the `mcp` extra only) | **merged**; cold start unchanged (median 177 ms before, 175 ms after) |
 
@@ -29,18 +29,20 @@ hook modules).
 
 ## Next step
 
-Launch the four agents in worktrees `/home/user/wt-<agent>` on branches `v02/<agent>`, created from
-the contract commit. If resuming cold:
-1. Create those worktrees.
-2. Give each agent its row above, plus the module docstrings.
+All four v0.2 agent branches are merged. The lead additions are done: the `ci.changed` and
+`agent.config_changed` signals, taint text that always names the signal, an `mcp` CI job, an
+explicit `--repo` on hooks, and updated docs.
 
-Afterwards:
-- merge the agent branches one at a time and run the full suite;
-- re-measure `plan` cold start, which must not regress from about 180 ms;
-- update the README, this file and the threat model;
-- run the fresh fail-open reviewer on the hooks, MCP and tamper code, fix its findings, and check
-  that CI on `claude/v0.2` is green (`gh api repos/MHHamdan/repo-marshal/actions/runs` works from
-  the cloud session).
+Measured on 2026-10-13:
+- **Suite:** 679 passed, 13 skipped (the MCP tests skip without the SDK, plus 1 root-only skip).
+  With the SDK, the MCP and contract tests give 19 passed.
+- **`plan` cold start:** median 188–195 ms, max 279 ms. v0.1 was 179–188 ms. The tamper agent's
+  signals add about 8 ms, and the MCP extra adds nothing.
+
+Now: launch a fresh fail-open reviewer, scoped to `hooks.py`, `mcp_server.py`, the tamper signals in
+`signals.py` / `decisions.py`, and the taint handling in `api.py`. It writes tests only, under
+`tests/review_v02/`. Then fix every confirmed finding, and confirm CI is green on `claude/v0.2`
+before reporting to the owner.
 
 ## Upstream repos inspected
 
