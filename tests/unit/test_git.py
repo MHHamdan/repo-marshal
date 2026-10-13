@@ -820,3 +820,203 @@ def test_read_helpers(committed: GitRepo) -> None:
     assert git.read_worktree(committed.root, "README.md") == b"worktree\n"
     assert git.read_worktree(committed.root, "missing") is None
     assert git.read_worktree(committed.root, "../outside") is None
+
+
+# --------------------------------------------------------------------------- fail-open fixes
+# Ignore rules the change controls, embedded repositories and lines hidden by attributes.
+
+
+def changes(r: GitRepo):
+    return git.collect_changes(r.root, git.resolve_base(r.root))
+
+
+def test_info_exclude_cannot_hide_a_new_file(committed: GitRepo) -> None:
+    committed.write("src/auth/sso.py", "def login():\n    return True\n")
+    (committed.root / ".git" / "info").mkdir(exist_ok=True)
+    (committed.root / ".git" / "info" / "exclude").write_text("sso.py\n")
+    cs = changes(committed)
+    assert by_path(cs)["src/auth/sso.py"].status is FileStatus.ADDED
+    assert by_path(cs)["src/auth/sso.py"].added == ("def login():", "    return True")
+    assert cs.opaque == ()
+    assert git.tree_digest(committed.root) == cs.tree_digest != head_tree(committed)
+
+
+def test_global_excludes_file_cannot_hide_a_new_file(
+    committed: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    excludes = tmp_path / "global-ignore"
+    excludes.write_text("*.py\n")
+    committed.git("config", "core.excludesFile", str(excludes))
+    committed.write("src/new.py", "x = 1\n")
+    assert "src/new.py" in changes(committed).paths
+
+
+def test_gitignore_edited_in_the_change_cannot_hide_a_new_file(committed: GitRepo) -> None:
+    committed.write(".gitignore", "build/\n*.log\nsso.py\n")
+    committed.write("src/auth/sso.py", "def login(): ...\n")
+    cs = changes(committed)
+    assert {".gitignore", "src/auth/sso.py"} <= set(cs.paths)
+    assert git.tree_digest(committed.root) == cs.tree_digest
+
+
+def test_base_ignore_rules_are_trusted(committed: GitRepo) -> None:
+    for i in range(50):
+        committed.write(f"build/deep/{i}.js", "x\n")
+    committed.write("x.log", "log\n")
+    committed.write("src/build/out.o", "o\n")
+    cs = changes(committed)
+    assert cs.files == () and cs.opaque == ()
+    assert cs.tree_digest == git.tree_digest(committed.root) == head_tree(committed)
+
+
+def test_only_files_base_would_not_ignore_are_added(committed: GitRepo) -> None:
+    (committed.root / ".git" / "info").mkdir(exist_ok=True)
+    (committed.root / ".git" / "info" / "exclude").write_text("gen/\n")
+    committed.write("gen/a.py", "a\n")
+    committed.write("gen/sub/b.py", "b\n")
+    committed.write("gen/trace.log", "ignored at BASE too\n")
+    committed.write("gen/build/c.py", "under a BASE-ignored directory\n")
+    cs = changes(committed)
+    assert cs.paths == ("gen/a.py", "gen/sub/b.py")
+    assert git.tree_digest(committed.root) == cs.tree_digest
+
+
+def test_negation_cannot_reinclude_under_base_ignored_directory(committed: GitRepo) -> None:
+    committed.write(".gitignore", "build/\n*.log\n!keep.log\n")
+    committed.commit("negation")
+    committed.write("build/keep.log", "still ignored: its directory is\n")
+    committed.write("keep.log", "re-included at BASE\n")
+    (committed.root / ".git" / "info" / "exclude").write_text("keep.log\n")
+    assert changes(committed).paths == ("keep.log",)
+
+
+def test_too_many_untrusted_ignored_files_are_opaque(committed: GitRepo) -> None:
+    (committed.root / ".git" / "info" / "exclude").write_text("venv/\nstray.py\n")
+    for i in range(git.MAX_UNTRUSTED_IGNORED + 1):
+        committed.write(f"venv/lib/m{i}.py", "x\n")
+    committed.write("stray.py", "s\n")
+    cs = changes(committed)
+    assert cs.files == ()
+    assert cs.opaque == (
+        "stray.py (1 file hidden by ignore rules not present at BASE)",
+        f"venv/ ({git.MAX_UNTRUSTED_IGNORED + 1} files hidden by ignore rules not present at BASE)",
+    )
+    assert cs.tree_digest == git.tree_digest(committed.root) == head_tree(committed)
+
+
+def test_unborn_repo_has_no_trusted_ignore_rules(repo: GitRepo) -> None:
+    repo.write(".gitignore", "secret.py\n")
+    repo.write("secret.py", "password = 1\n")
+    repo.write("app.py", "x\n")
+    cs = git.collect_changes(repo.root, None)
+    assert cs.paths == (".gitignore", "app.py", "secret.py")
+    assert git.tree_digest(repo.root) == cs.tree_digest
+
+
+def test_explicit_base_selects_trusted_rules(committed: GitRepo) -> None:
+    first = committed.head()
+    committed.write(".gitignore", "build/\n*.log\nlocal.py\n")
+    committed.commit("ignore local.py")
+    committed.write("local.py", "x\n")
+    assert git.tree_digest(committed.root) == head_tree(committed)
+    cs = git.collect_changes(committed.root, first)
+    assert "local.py" in cs.paths
+    assert git.tree_digest(committed.root, base=first) == cs.tree_digest
+
+
+def test_evidence_dir_under_exclude_everything(committed: GitRepo) -> None:
+    (committed.root / ".git" / "info" / "exclude").write_text("*\n")
+    committed.write(".repomarshal/state/base.json", "{}\n")
+    assert git.tree_digest(committed.root) == head_tree(committed)
+    committed.write("src/app.py", "print('changed')\n")
+    committed.write("src/new.py", "n\n")
+    cs = changes(committed)
+    assert cs.paths == ("src/app.py", "src/new.py")
+    assert cs.opaque == ()
+
+
+def test_tracked_evidence_keeps_head_version_when_ignored(committed: GitRepo) -> None:
+    committed.write(".repomarshal/evidence/old.json", "{}\n")
+    committed.commit()
+    (committed.root / ".git" / "info" / "exclude").write_text(".repomarshal\n")
+    committed.write(".repomarshal/evidence/old.json", "changed\n")
+    committed.write(".repomarshal/state/base.json", "{}\n")
+    assert git.tree_digest(committed.root) == head_tree(committed)
+    committed.delete(".repomarshal/evidence/old.json")
+    assert git.tree_digest(committed.root) == head_tree(committed)
+
+
+def test_embedded_repository_is_opaque(committed: GitRepo) -> None:
+    nested = GitRepo(committed.root / "src" / "ext")
+    nested.write("auth/login.py", "def login(): ...\n")
+    nested.commit("vendored")
+    cs = changes(committed)
+    assert cs.opaque == ("src/ext (embedded git repository; contents not inspected)",)
+    assert git.tree_digest(committed.root) == cs.tree_digest
+
+
+def test_embedded_repository_without_commits_is_opaque(committed: GitRepo) -> None:
+    nested = GitRepo(committed.root / "src" / "ext")
+    nested.write("login.py", "x\n")
+    committed.write("src/other.py", "o\n")
+    cs = changes(committed)
+    assert cs.paths == ("src/other.py",)
+    assert cs.opaque == ("src/ext (embedded git repository; contents not inspected)",)
+
+
+def test_ignored_embedded_repository_is_opaque(committed: GitRepo) -> None:
+    (committed.root / ".git" / "info" / "exclude").write_text("vendor/\n")
+    nested = GitRepo(committed.root / "vendor" / "lib")
+    nested.write("x.py", "x\n")
+    nested.commit()
+    cs = changes(committed)
+    assert cs.opaque == ("vendor/lib (embedded git repository; contents not inspected)",)
+
+
+def test_unchanged_gitlink_is_not_opaque_but_a_new_commit_is(committed: GitRepo) -> None:
+    nested = GitRepo(committed.root / "ext")
+    nested.write("x.py", "x\n")
+    nested.commit()
+    committed.commit("record gitlink")
+    assert changes(committed).opaque == ()
+    nested.write("x.py", "y\n")
+    assert changes(committed).opaque == ()  # uncommitted edits: recorded commit unchanged
+    nested.commit()
+    assert changes(committed).opaque == ("ext (embedded git repository; contents not inspected)",)
+
+
+@pytest.mark.parametrize("attrs", ["*.py -diff\n", "*.py binary\n", "*.py diff=x\n"])
+def test_attributes_cannot_hide_added_lines(committed: GitRepo, attrs: str) -> None:
+    committed.git("config", "diff.x.textconv", "true")
+    committed.git("config", "diff.x.binary", "true")
+    committed.git("config", "diff.external", "false")
+    (committed.root / ".git" / "info" / "attributes").write_text(attrs)
+    committed.write("src/app.py", "print('hi')\npassword = 'x'\n")
+    committed.write(".gitattributes", attrs)
+    f = by_path(changes(committed))["src/app.py"]
+    assert (f.binary, f.added, f.truncated) == (False, ("password = 'x'",), False)
+
+
+def test_external_diff_env_cannot_interfere(
+    committed: GitRepo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_EXTERNAL_DIFF", "false")
+    monkeypatch.setenv("GIT_DIFF_OPTS", "--unified=5")
+    committed.write("src/app.py", "print('hi')\nx = 1\n")
+    assert by_path(changes(committed))["src/app.py"].added == ("x = 1",)
+
+
+def test_binary_is_decided_by_content(committed: GitRepo) -> None:
+    (committed.root / ".git" / "info" / "attributes").write_text("*.bin text diff\n")
+    committed.write("blob.bin", b"line\n" + b"\0" * 10)
+    committed.write("late.dat", b"a\n" * 5000 + b"\0")  # NUL past the first 8000 bytes
+    cs = changes(committed)
+    assert by_path(cs)["blob.bin"].binary is True and by_path(cs)["blob.bin"].added == ()
+    late = by_path(cs)["late.dat"]
+    assert late.binary is False and late.truncated is True
+
+
+def test_large_binary_is_streamed(committed: GitRepo) -> None:
+    committed.write("big.bin", b"\0" + os.urandom(3 * 1024 * 1024))
+    f = by_path(changes(committed))["big.bin"]
+    assert f.binary is True and f.added == ()
