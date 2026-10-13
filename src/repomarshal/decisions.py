@@ -28,10 +28,21 @@ Implementation notes (precisions within the contract):
   files, except for task.* and WIDENING signals, which trigger every scope.
 - task.* triggers (TASK_TRIGGERS below) map task domains onto kinds; they can only add a
   trigger, so task text can never remove a requirement (threat T8).
+
+v0.2 taint (threat T2): every REQUIRED or UNAVAILABLE gate decision of a test-running kind
+(TEST_RUNNING_KINDS) whose gate covers a file of a tamper signal (signals.TAMPER_SIGNALS) gets
+one taint Reason per covered signal note, e.g. "tests.deleted: backend/tests/test_refresh.py
+removes test_rotation; this gate's result cannot vouch for the change". A root-scope gate covers
+every file. tests.discovery_narrowed from a repository-root file (no directory) taints the
+test-running gates of every scope: runners read config from parent directories. The gate stays
+REQUIRED, so it still runs and its evidence shows the real exit code; api.done reports its
+result as UNKNOWN. Kind-level decisions (no gate) are not tainted: they are already UNKNOWN or
+not counted.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
 from repomarshal.model import (
@@ -48,11 +59,20 @@ from repomarshal.model import (
     Signal,
     max_risk,
 )
-from repomarshal.signals import WIDENING
+from repomarshal.signals import TAMPER_SIGNALS, WIDENING, tamper_notes
 
 # Kinds whose gates are widened to every scope by a WIDENING signal.
 WIDENED_KINDS: frozenset[GateKind] = frozenset(
     {GateKind.FORMAT, GateKind.LINT, GateKind.TYPECHECK, GateKind.UNIT}
+)
+
+# Kinds whose gates run tests, and so can be fooled by deleted, skipped or undiscovered tests.
+TEST_RUNNING_KINDS: frozenset[GateKind] = frozenset(
+    {GateKind.UNIT, GateKind.INTEGRATION, GateKind.RUNTIME, GateKind.A11Y}
+)
+TAINT_SUFFIX = "this gate's result cannot vouch for the change"
+TAINTED_STATUSES: frozenset[DecisionStatus] = frozenset(
+    {DecisionStatus.REQUIRED, DecisionStatus.UNAVAILABLE}
 )
 
 # Diff signals that trigger each kind (files-scoped triggers).
@@ -245,6 +265,33 @@ def _decide_kind(kind: GateKind, gates: list[Gate], triggers: list[_Trigger]) ->
     return out
 
 
+def _taint(g: Gate, tamper: list[Signal]) -> tuple[Reason, ...]:
+    out: list[Reason] = []
+    for s in tamper:
+        for note, paths in tamper_notes(s):
+            root_config = s.id == "tests.discovery_narrowed" and any("/" not in p for p in paths)
+            if root_config or any(g.covers(p) for p in paths):
+                out.append(Reason(f"{s.id}: {note}; {TAINT_SUFFIX}", s.id))
+    return tuple(dict.fromkeys(out))
+
+
+def _with_taint(
+    decisions: list[GateDecision], gates: dict[str, Gate], signals: dict[str, Signal]
+) -> list[GateDecision]:
+    tamper = [signals[sid] for sid in TAMPER_SIGNALS if sid in signals]
+    if not tamper:
+        return decisions
+    out = []
+    for d in decisions:
+        g = gates.get(d.gate_id) if d.gate_id else None
+        if g is not None and d.kind in TEST_RUNNING_KINDS and d.status in TAINTED_STATUSES:
+            taint = _taint(g, tamper)
+            if taint:
+                d = dataclasses.replace(d, taint=d.taint + taint)
+        out.append(d)
+    return out
+
+
 def decide_gates(
     signals: tuple[Signal, ...], inventory: Inventory, change: ChangeSet
 ) -> tuple[GateDecision, ...]:
@@ -255,4 +302,4 @@ def decide_gates(
     for kind in KIND_ORDER:
         gates = sorted((g for g in inventory.gates if g.kind == kind), key=lambda g: g.id)
         out.extend(_decide_kind(kind, gates, _triggers(kind, by_id, risk)))
-    return tuple(out)
+    return tuple(_with_taint(out, {g.id: g for g in inventory.gates}, by_id))
