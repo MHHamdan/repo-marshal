@@ -4,47 +4,42 @@ _Last updated: 2026-10-13_
 
 ## Current phase
 
-**v0.2 is in progress** on branch `claude/v0.2`, which branched from `origin/main` at f776979. v0.1
-is merged to main and was verified by the owner: 482 tests, plan median 178 ms, and the
-`"test": "exit 0"` attack gives UNKNOWN.
+**v0.2 is complete** on branch `claude/v0.2` and is waiting for the owner to verify and merge.
+Phases 1–5 and v0.1 are merged to main.
 
-v0.2 scope (from the owner): roadmap SHOULD #2 (tamper signals), #4 (CI and the CI recipe),
-#5 (`init`, `doctor`), #6 (Claude Code Stop hook) and #7 (MCP server).
+Delivered (roadmap SHOULD #2, #4, #5, #6, #7, plus `ci.changed` and `agent.config_changed`):
+- **Test-tamper signals:** `tests.deleted`, `tests.skip_added` and `tests.discovery_narrowed` taint
+  test gates, so their results are UNKNOWN.
+- **CI:** `.github/workflows/ci.yml` runs pytest on 3.11–3.13, ruff, the MCP extra job, and a PR
+  dogfood `done`. Actions are pinned by SHA and run with least privilege. The recipe is in
+  `docs/guides/ci.md`.
+- **Commands:** `init`, `doctor`, and the Claude Code hook `done --hook claude-code`
+  (SessionStart anchors BASE; Stop fails closed).
+- **MCP:** a stdio server as the `repomarshal[mcp]` extra (plan, done, explain; MCP 2026-07-28 with
+  2025-11-25 fallback).
+- **Review:** a fresh fail-open review found 10 paths. All are fixed, and the tests are in
+  `tests/review_v02/`.
 
-Working model: the same as v0.1. The lead owns the contract and integration. One worktree and
-branch per agent, with disjoint file ownership. The lead merges one branch at a time, and only the
-lead pushes.
+Measured on 2026-10-13:
+- **Suite:** 830 passed, 14 skipped (13 SDK-only MCP tests, 1 root-only). With the SDK venv,
+  `tests/review_v02`, the MCP tests and the contract tests give 88 passed. Ruff is clean.
+- **`plan` cold start:** median 181–184 ms, max 228 ms (v0.1: 179–188 ms). The MCP extra adds
+  nothing to `plan`.
+- **Demo verdicts unchanged:** A PASS, B PASS, C UNKNOWN.
 
-| Agent | Branch | Scope | Owns | Status |
-|---|---|---|---|---|
-| ci | `v02/ci` | CI workflow, dogfood job, CI recipe | `.github/workflows/ci.yml`, `docs/guides/ci.md` | **merged**; local dogfood gives PASS |
-| tamper | `v02/tamper` | tests.deleted, tests.skip_added, tests.discovery_narrowed, each producing a taint (UNKNOWN) | `signals.py`, `decisions.py`, `tests/unit/test_signals.py`, `test_decisions.py`, `tests/acceptance/test_tamper.py` | **merged** |
-| hosts | `v02/hosts` | `init`, `doctor`, `done --hook claude-code` | `initcmd.py`, `doctor.py`, `hooks.py`, `tests/unit/test_initcmd.py`, `test_doctor.py`, `test_hooks.py`, `tests/fixtures/hooks/**` | **merged** |
-| mcp | `v02/mcp` | the `repomarshal[mcp]` stdio server (plan, done, explain) | `mcp_server.py`, `tests/unit/test_mcp_server.py`, `pyproject.toml` (the `mcp` extra only) | **merged**; cold start unchanged (median 177 ms before, 175 ms after) |
-
-The contract is committed: `GateDecision.taint` (in the model and the schema; `done` turns a tainted
-gate's result into UNKNOWN), CLI dispatch for `init`, `doctor`, `done --hook` and `mcp`, the module
-stubs with their specs, and contract tests (stdlib-only core; `plan`/`done` never import the MCP or
-hook modules).
+Local branches: `claude/v0.2` only, plus the old `claude/phase1-research` and `claude/v0.1-slice`.
+All v0.2 agent worktrees and branches are removed. Remote branches are left to the owner.
 
 ## Next step
 
-The v0.2 fail-open review is merged: `tests/review_v02/`, with 22 red `failopen` tests over
-10 paths. The fixes are split up:
-- **Fix agent "fix-tamper"** (branch `v02/fix-tamper`; owns `signals.py`, `inventory.py` and their
-  unit tests): review #7 (skip aliases, unicode, `__test__`, `importorskip`, uncollected
-  locations, `jest.roots`, `pytest.toml`) and #8 (`PYTEST_ADDOPTS`, positional paths, `--`
-  passthrough).
-- **The lead** fixes:
-  - #1–#2: a client or CLI `--base` may only widen the diff (merge-base with the automatic or
-    remembered BASE) and never writes the anchor;
-  - #3: nested repositories are refused, the hook uses `CLAUDE_PROJECT_DIR`, and the MCP server is
-    pinned to its launch root;
-  - #4: SIGTERM, SIGHUP and a deadline block;
-  - #5: stdin is decoded inside the wrapper;
-  - #6: taint and tree-changed only downgrade a PASS.
+The owner verifies and merges `claude/v0.2`. Then, in roadmap SHOULD order: the remaining
+catalogue signals (`agent.skill_changed`, `dependency.changed`, `db.migration`), the SkillSpector
+and Playwright adapters, more inventory sources, the evidence hash chain with `status`, waivers,
+and publishing to PyPI.
 
-Run the MCP review tests with `PYTHONPATH=src /tmp/claude-0/mcpvenv/bin/python -m pytest`.
+Repository settings for the owner, which can't be done from here:
+- make `ci / dogfood` a required check;
+- add CODEOWNERS for `.github/workflows/`.
 
 ## Upstream repos inspected
 

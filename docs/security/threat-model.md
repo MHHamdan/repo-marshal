@@ -76,6 +76,32 @@ that exist in code, or that are scheduled as v0.1 MUST/SHOULD in the roadmap.
 | T19 | Git clean/smudge filters or a submodule with `ignore=all`, configured by the agent, altering what `git add` records | 1 | 3 | Not handled in v0.1. CI re-run is the anchor |
 | T20 | The agent deletes `.repomarshal/state/base.json` *and* moves refs before the first `done` | 1 | 3 | Falls back to automatic BASE. CI with an explicit BASE is the anchor |
 
+### Found by the v0.2 adversarial review (all fixed, each with a regression test in `tests/review_v02/`)
+
+1. **An MCP client or CLI `--base` could narrow the diff or overwrite the remembered BASE.** An
+   explicit BASE now only widens (merge-base with the automatic or remembered BASE) and is never
+   remembered.
+2. **Committing directly on a remote-less default branch moved the automatic BASE with the agent's
+   commits.** A `SessionStart` hook (installed by `init --print claude-code`) now anchors BASE
+   before the agent works.
+3. **A repository nested, untracked, inside the project could be verified instead of the
+   project.** `done` refuses it, and the hook prefers `CLAUDE_PROJECT_DIR` over the payload cwd.
+4. **SIGTERM or a host timeout during gates made the hook exit with no output,** which allowed the
+   stop. It now blocks on SIGTERM, SIGHUP and an overall deadline (`REPOMARSHAL_HOOK_DEADLINE`,
+   default 1700 s).
+5. **Undecodable stdin crashed the hook outside its fail-closed wrapper.** Stdin is now read and
+   decoded inside it.
+6. **Taint turned a FAIL into UNKNOWN.** Taint and tree-changed now only downgrade a PASS.
+7. **Skip, collection and discovery evasions** (aliases, unicode lookalikes, `__test__ = False`,
+   `importorskip`, moves into uncollected locations, `jest.roots`, `pytest.toml`) are detected.
+8. **Runner narrowing through `PYTEST_ADDOPTS`, positional paths or `--` passthrough** is detected.
+
+| # | Remaining threat (v0.2) | L | I | Note |
+|---|---|---|---|---|
+| T21 | The hook is killed with SIGKILL (no handler possible) | 1 | 3 | Claude Code then treats it as a non-blocking error. CI is the anchor |
+| T22 | A Stop with no SessionStart anchor, on a default branch with no remote, after the agent committed | 2 | 3 | The committed work is indistinguishable from the baseline locally. Install the SessionStart hook, push to a remote, and rely on CI |
+| T23 | Tamper detection is heuristic: Make variables, conftest hooks, `setattr(..., "__test__", False)`, CI `run:` commands | 2 | 2 | Documented false negatives. Some false positives are accepted because the taint fails closed |
+
 ## Residual risks that must be stated in the README
 
 1. **A local PASS is advisory.** A same-user agent can, with deliberate effort, defeat any local

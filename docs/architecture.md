@@ -399,7 +399,9 @@ makes sure local files are never the source of truth for a verdict:
    the BASE it used. The first BASE seen per branch is also remembered in
    `.repomarshal/state/base.json`. Later automatic resolutions take the merge-base of the
    remembered and the automatic BASE, so moving a ref can only widen the diff (fail-open review #2).
-   Deleting the state only restores plain automatic resolution. An explicit `--base` always wins.
+   Deleting the state only restores plain automatic resolution. An explicit `--base` (CLI or MCP)
+   may be agent-supplied, so it can only *widen* the diff (merge-base with that floor) and is
+   never remembered. A Claude Code `SessionStart` hook anchors BASE before the agent works (v0.2).
 4. **The authoritative anchor is a party the agent does not control.** CI, or a reviewer's machine,
    re-runs `repomarshal done` from scratch on the pushed commit and compares verdicts. A local PASS
    is advisory for the inner loop. This is written in the README and in every `done` output footer.

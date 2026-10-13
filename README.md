@@ -37,10 +37,12 @@ cd /path/to/your/repo
 
 ### With a coding agent, and in CI
 
-- **Claude Code:** `repomarshal init --print claude-code` prints a Stop-hook snippet for
-  `.claude/settings.json`. The hook runs `repomarshal done --hook claude-code`. Any verdict other
-  than PASS, and any error, blocks the stop. The agent gets the failing or unknown gates as
-  feedback.
+- **Claude Code:** `repomarshal init --print claude-code` prints a hooks snippet for
+  `.claude/settings.json`.
+  - **SessionStart** anchors BASE before the agent works.
+  - **Stop** runs `repomarshal done --hook claude-code`. Any verdict other than PASS, and any
+    error, signal or timeout, blocks the stop. The agent gets the failing or unknown gates as
+    feedback.
 - **Any MCP client:** `pip install "repomarshal[mcp]"`, then register `repomarshal mcp` as a stdio
   server. Tools: `repomarshal_plan`, `repomarshal_done` and `repomarshal_explain`. Each takes an
   explicit `repo_path`.
@@ -135,6 +137,8 @@ Details: [`docs/architecture.md`](docs/architecture.md), [`docs/adr/`](docs/adr/
   that judge it.
 - **A gate whose definition changed in the diff is UNKNOWN, whatever its exit code.** For example,
   editing `"test"` in package.json to `"exit 0"` cannot produce a PASS.
+- **An explicit `--base` can only widen what is checked.** A repository nested, untracked, inside
+  your project is refused.
 - **A local PASS is advisory.** The coding agent runs as your user and could, with deliberate effort,
   tamper with anything local. The authoritative verdict is a re-run of `repomarshal done` where the
   agent has no write access (CI or a reviewer).
