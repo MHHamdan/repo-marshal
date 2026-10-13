@@ -84,6 +84,31 @@ def _record(root: Path, p: Plan, results, before: str, after: str, v, reasons) -
     return DoneResult(v, tuple(reasons), p, record, path)
 
 
+def _nested_problem(root: Path) -> str | None:
+    """A repository the agent created inside another project (v0.2 fail-open review #3).
+
+    If `root` sits inside an outer git work tree and the outer project sees it as a new,
+    untracked (not ignored) directory, verifying it would judge a throwaway repository instead
+    of the project. Registered submodules (tracked gitlinks) and ignored directories are fine.
+    """
+    outer_r = git._git(root.parent, "rev-parse", "--show-toplevel", check=False)
+    if outer_r.returncode != 0 or not outer_r.stdout.strip():
+        return None
+    outer = Path(outer_r.stdout.strip()).resolve()
+    rel = root.relative_to(outer).as_posix() if root.is_relative_to(outer) else None
+    if rel is None:
+        return None
+    st = git._git(
+        outer, "status", "--porcelain", "--untracked-files=normal", "--", rel, check=False
+    )
+    if any(line.startswith("??") for line in st.stdout.splitlines()):
+        return (
+            f"{root} is a git repository nested, untracked, inside the project {outer}; "
+            "verify the project itself"
+        )
+    return None
+
+
 def done(
     repo: str | Path,
     task: str | None = None,
@@ -92,6 +117,9 @@ def done(
     dry_run: bool = False,
 ) -> DoneResult:
     root = git.repo_root(repo)
+    nested = _nested_problem(root)
+    if nested:
+        return DoneResult(Verdict.UNKNOWN, (nested,), None, None, None)
     base_sha, base_how = anchor.effective_base(root, base)
     before = git.tree_digest(root, base=base_sha)
     try:
@@ -159,18 +187,23 @@ def done(
         result = runner.run_gate(root, gate, p.change, env)
         if d.taint:
             # v0.2 tamper signals: the change weakens what this gate runs (deleted or skipped
-            # tests, narrowed discovery). Its result cannot vouch for the change.
-            result = dataclasses.replace(
-                result,
-                status=ResultStatus.UNKNOWN,
-                reason="; ".join(t.text for t in d.taint)
-                + f"; was: {result.status.value} ({result.reason})",
-            )
+            # tests, narrowed discovery), so its result cannot vouch for the change. Taint only
+            # ever DOWNGRADES a PASS; a FAIL stays FAIL (v0.2 fail-open review #6).
+            taint = "; ".join(t.text for t in d.taint)
+            if result.status in (ResultStatus.PASS, ResultStatus.WAIVED):
+                result = dataclasses.replace(
+                    result,
+                    status=ResultStatus.UNKNOWN,
+                    reason=f"{taint}; was: {result.status.value} ({result.reason})",
+                )
+            else:
+                result = dataclasses.replace(result, reason=f"{result.reason}; also: {taint}")
         # Fail-open review #3: check the tree after EVERY gate. A gate that swaps files for later
         # gates (and a final gate that restores them) would otherwise go unnoticed.
         now = git.tree_digest(root, base=base_sha)
         if now != before:
             tree_changed = True
+        if now != before and result.status in (ResultStatus.PASS, ResultStatus.WAIVED):
             result = dataclasses.replace(
                 result,
                 status=ResultStatus.UNKNOWN,

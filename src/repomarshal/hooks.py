@@ -36,7 +36,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
+import signal
 import sys
 from typing import Any
 
@@ -46,6 +48,10 @@ from repomarshal.runner import redact
 
 HOSTS = ("claude-code",)
 STOP_EVENTS = ("Stop", "SubagentStop")
+# SessionStart anchors BASE before the agent can commit anything (v0.2 review): without it, an
+# agent committing directly on a default branch with no remote moves the automatic BASE along with
+# its own commits. Recording the BASE at session start makes later commits part of the diff.
+START_EVENTS = ("SessionStart",)
 
 MAX_ITEMS = 12  # gate lines listed in a reason
 MAX_LINE = 300  # characters per listed line
@@ -152,10 +158,32 @@ def _blocked(problem: str, active: bool = False) -> int:
 def _repo_from(payload: dict[str, Any], repo: str | None) -> str | None:
     if repo not in (None, ""):
         return repo
+    # The payload `cwd` follows the agent's shell (`cd`), so the project root that Claude Code
+    # sets for hooks wins when present (v0.2 fail-open review #3).
+    project = os.environ.get("CLAUDE_PROJECT_DIR", "")
+    if project.strip():
+        return project
     cwd = payload.get("cwd")
     if isinstance(cwd, str) and cwd.strip():
         return cwd
     return None
+
+
+def _session_start(payload: dict[str, Any], repo: str | None, base: str | None) -> int:
+    """Record the BASE for this session (first-wins, widen-only anchor). Never blocks: a session
+    start that cannot be anchored just leaves automatic resolution in place, and says so on
+    stderr. Nothing is written to stdout (SessionStart stdout becomes agent context)."""
+    from repomarshal import anchor, git
+
+    target = _repo_from(payload, repo)
+    try:
+        root = git.repo_root(target or ".")
+        floor, how = anchor.effective_base(root, None)
+        anchor.remember(root, floor, explicit=False)
+        sys.stderr.write(f"repomarshal: session BASE anchored at {floor} ({how})\n")
+    except Exception as e:  # noqa: BLE001 - anchoring is best effort; Stop still fails closed
+        sys.stderr.write(f"repomarshal: could not anchor BASE at session start: {e}\n")
+    return 0
 
 
 def _claude_code(payload_text: str, repo: str | None, base: str | None) -> int:
@@ -167,6 +195,8 @@ def _claude_code(payload_text: str, repo: str | None, base: str | None) -> int:
         return _blocked("the Stop hook payload on stdin is not a JSON object")
     active = payload.get("stop_hook_active") is True
     event = payload.get("hook_event_name")
+    if event in START_EVENTS:
+        return _session_start(payload, repo, base)
     if event is not None and event not in STOP_EVENTS:
         return _blocked(
             f"unexpected hook_event_name {event!r} (configure this hook under Stop)", active
@@ -196,13 +226,74 @@ def _claude_code(payload_text: str, repo: str | None, base: str | None) -> int:
     return _emit_block(_block_reason(verdict.value, items, _WHAT_TO_DO[verdict], active))
 
 
-def run(host: str, payload_text: str, repo: str | None = None, base: str | None = None) -> int:
+DEFAULT_DEADLINE_S = 1700  # below the 1800 s timeout in the `init --print` snippet
+
+
+def _install_last_resort_handlers() -> dict[int, Any]:
+    """SIGTERM/SIGHUP (the host's timeout or a kill) and SIGALRM (our own deadline) must still
+    block the stop: Python's default dispositions exit with no stdout, which Claude Code treats
+    as a non-blocking error (v0.2 fail-open review #4). The handler writes the block decision
+    with os.write and leaves immediately with os._exit, so it works mid-gate."""
+
+    def handler(signum: int, _frame: Any) -> None:
+        name = signal.Signals(signum).name
+        reason = (
+            "BLOCKED: repomarshal done did not finish "
+            f"({'deadline reached' if signum == signal.SIGALRM else name + ' received'}); "
+            "nothing was verified, so the stop is not allowed. Make the gates faster or raise "
+            "REPOMARSHAL_HOOK_DEADLINE and the hook timeout, then stop again."
+        )
+        data = (json.dumps({"decision": "block", "reason": reason}) + "\n").encode()
+        with contextlib.suppress(OSError):
+            os.write(1, data)
+        os._exit(0)
+
+    previous: dict[int, Any] = {}
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGALRM):
+        with contextlib.suppress(ValueError, OSError):  # not in the main thread: skip
+            previous[sig] = signal.signal(sig, handler)
     try:
+        deadline = int(os.environ.get("REPOMARSHAL_HOOK_DEADLINE", DEFAULT_DEADLINE_S))
+    except ValueError:
+        deadline = DEFAULT_DEADLINE_S
+    with contextlib.suppress(ValueError, OSError):
+        signal.alarm(max(1, deadline))
+    return previous
+
+
+def _restore_handlers(previous: dict[int, Any]) -> None:
+    with contextlib.suppress(ValueError, OSError):
+        signal.alarm(0)
+    for sig, old in previous.items():
+        with contextlib.suppress(ValueError, OSError, TypeError):
+            signal.signal(sig, old)
+
+
+def _payload_from(payload: str | bytes | None) -> str:
+    if payload is None:
+        payload = sys.stdin.buffer.read()  # read INSIDE the fail-closed wrapper (review #5)
+    if isinstance(payload, bytes):
+        return payload.decode("utf-8", errors="replace")
+    return payload
+
+
+def run(
+    host: str,
+    payload_text: str | bytes | None = None,
+    repo: str | None = None,
+    base: str | None = None,
+) -> int:
+    previous: dict[int, Any] = {}
+    try:
+        previous = _install_last_resort_handlers()
+        text = _payload_from(payload_text)
         if host not in HOSTS:
             return _blocked(f"unsupported hook host {host!r} (supported: {', '.join(HOSTS)})")
-        return _claude_code(payload_text, repo, base)
+        return _claude_code(text, repo, base)
     except BaseException as e:  # noqa: BLE001 - fail closed: every error blocks the stop
         try:
             return _blocked(f"internal error: {type(e).__name__}: {e}")
         except BaseException:  # noqa: BLE001 - last resort: the exit-2 blocking channel
             return 2
+    finally:
+        _restore_handlers(previous)

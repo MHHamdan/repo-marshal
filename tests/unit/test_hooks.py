@@ -320,3 +320,32 @@ def test_pass_without_a_record_blocks(monkeypatch, capsys, tmp_path):
     code = hooks.run("claude-code", payload(tmp_path))
     reason = assert_blocks(code, capsys.readouterr().out)
     assert "UNKNOWN" in reason
+
+
+def test_run_restores_signal_handlers_and_cancels_the_deadline(capsys):
+    """In-process callers must not inherit the hook's last-resort handlers or its alarm."""
+    import signal as _signal
+
+    before = {s: _signal.getsignal(s) for s in (_signal.SIGTERM, _signal.SIGHUP, _signal.SIGALRM)}
+    hooks.run("claude-code", "not json")
+    capsys.readouterr()
+    after = {s: _signal.getsignal(s) for s in before}
+    assert after == before
+    assert _signal.alarm(0) == 0  # no pending alarm
+
+
+def test_session_start_anchors_base_so_commits_on_main_are_judged(webapp, capsys, monkeypatch):
+    """SessionStart records BASE; a failing change the agent then COMMITS on main (no remote)
+    is still judged by the Stop hook instead of disappearing into the automatic BASE."""
+    monkeypatch.setenv("PATH", webapp.path_env)
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    start = json.dumps({"hook_event_name": "SessionStart", "cwd": str(webapp.root)})
+    assert hooks.run("claude-code", start) == 0
+    assert capsys.readouterr().out == ""  # never blocks, never writes agent context
+    webapp.routine_backend_change()
+    webapp.stub("python", exit_code=1, output="1 failed")
+    webapp.repo.commit("agent: backend change on main")
+    stop = json.dumps({"hook_event_name": "Stop", "cwd": str(webapp.root)})
+    code = hooks.run("claude-code", stop)
+    out = capsys.readouterr().out
+    assert code == 0 and json.loads(out)["decision"] == "block", out

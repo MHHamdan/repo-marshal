@@ -82,6 +82,17 @@ Next steps:
 
 _CLAUDE_HOOK = {
     "hooks": {
+        "SessionStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "repomarshal done --hook claude-code",
+                        "timeout": 60,
+                    }
+                ]
+            }
+        ],
         "Stop": [
             {
                 "hooks": [
@@ -92,7 +103,7 @@ _CLAUDE_HOOK = {
                     }
                 ]
             }
-        ]
+        ],
     }
 }
 

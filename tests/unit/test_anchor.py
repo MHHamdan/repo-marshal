@@ -26,14 +26,22 @@ def test_first_resolution_is_remembered_and_moving_main_cannot_narrow(tmp_path):
     assert sha2 == base and how2.startswith("remembered")
 
 
-def test_explicit_base_wins_and_replaces_memory(tmp_path):
+def test_explicit_base_can_only_widen_and_is_never_remembered(tmp_path):
     r, base, work = _repo(tmp_path)
     anchor.remember(r.root, base, explicit=False)
-    sha, how = anchor.effective_base(r.root, work)
-    assert sha == work and how == "explicit"
+    sha, how = anchor.effective_base(r.root, work)  # narrower than the floor: widened back
+    assert sha == base and how.startswith("explicit, widened")
     anchor.remember(r.root, work, explicit=True)
     state = json.loads((r.root / anchor.STATE_FILE).read_text())
-    assert state["feature"] == work
+    assert state["feature"] == base
+
+
+def test_explicit_older_base_is_honoured(tmp_path):
+    r, base, work = _repo(tmp_path)
+    r.write("a.txt", "3")
+    r.commit("more")
+    older = r.git("rev-parse", f"{base}")
+    assert anchor.effective_base(r.root, older) == (older, "explicit")
 
 
 def test_first_value_wins_without_explicit(tmp_path):

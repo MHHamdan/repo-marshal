@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "done" and args.hook:
         from repomarshal import hooks  # lazy: hook mode handles every error itself (fail closed)
 
-        return hooks.run(args.hook, sys.stdin.read(), repo=args.repo, base=args.base)
+        return hooks.run(args.hook, None, repo=args.repo, base=args.base)  # reads stdin itself
     if args.command == "mcp":
         from repomarshal import mcp_server  # lazy: needs the optional `mcp` extra
 

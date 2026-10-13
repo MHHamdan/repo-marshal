@@ -8,6 +8,7 @@ Run with the SDK venv:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -52,6 +53,12 @@ def test_client_base_cannot_hide_committed_work(on_path: Webapp):
     committed failing backend change is never judged and the tool returns PASS. An untrusted
     explicit base must never narrow the diff below the automatic/remembered BASE."""
     w = on_path
+    # Lead note: committing directly on a remote-less default branch moves the automatic BASE
+    # with the agent's commits, so the honest baseline needs the SessionStart anchor that
+    # `init --print claude-code` installs. Model that session start before the agent works.
+    from repomarshal import hooks
+
+    hooks.run("claude-code", json.dumps({"hook_event_name": "SessionStart", "cwd": str(w.root)}))
     _commit_failing_change_then_docs(w)
     assert api.done(w.root).verdict == api.Verdict.FAIL  # honest verdict
 
