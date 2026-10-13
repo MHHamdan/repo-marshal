@@ -4,7 +4,7 @@ _Last updated: 2026-10-13_
 
 ## Current phase
 
-**Phase 3 (Architecture, MISSION.md §64) is in progress.** The owner asked for Phases 3, 4 and 5
+**Phase 3 (Architecture) is complete. Phase 4 (Threat Model, MISSION.md §65) is next.** The owner asked for Phases 3, 4 and 5
 together, then the start of Phase 6. Phases 1–2 are complete: see `docs/research/`,
 `docs/product-definition.md` and `LICENSE` (Apache-2.0).
 
@@ -13,18 +13,22 @@ Done in Phase 3:
   cold starts: about 60 ms for stdlib, 190 ms with typer + pydantic, against a 300 ms budget.
 - `docs/architecture.md`: components, IR, gate inventory (§3), planning pseudo-code with the
   Scenario C walkthrough (§4), tree digest and binding (§5), verdict (§6), tamper resistance (§7).
+  It is 433 lines, slightly over the roughly 400-line budget; the four required worked examples
+  account for most of it.
+- `docs/adr/002`–`005`: provider integration, agent interoperability, evidence model, change planner.
+  **Phase 3 is complete.**
 
 ## Next step
 
-Write ADRs 002–005 in `docs/adr/`, one screen each, in the format context / decision / alternatives /
-consequences:
-- 002 provider integration: subprocess adapters, status levels, version pinning, no stubs;
-- 003 agent interoperability: CLI JSON plus MCP stdio plus a Stop-hook shim; no config generation;
-- 004 evidence model: re-execution, tree digest, local evidence is advisory, CI is the anchor;
-- 005 change planner: signal catalogue, decision rules, widening, task text only adds.
+Write `docs/security/threat-model.md` (Phase 4), short and prioritised:
+- the coding agent itself is the main adversary: edits tests, deletes tests, edits policy, CI or
+  hooks, forges evidence, argues gates away in the task text;
+- also prompt injection from repository content, and malicious skills;
+- rank by likelihood × impact;
+- separate the v0.1 mitigations (architecture §7) from later ones.
 
-All four summarise what `docs/architecture.md` already specifies. Then write
-`docs/security/threat-model.md` and `docs/roadmap.md`, then do Phase 6.
+Then `docs/roadmap.md` (Phase 5): v0.1 MUST is only what the MISSION.md §42 demo needs end to end.
+Then the Phase 6 slice.
 
 ## Upstream repos inspected
 
