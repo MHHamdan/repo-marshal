@@ -20,7 +20,7 @@ in its own git worktree with its own branch.
 | review | `slice/review` | Step 4 | `tests/review/**` only (fail-open hunt) | **merged**: 11 confirmed fail-open paths, 22 red `failopen` tests |
 | fix-git | `fix/git` | review #6, #7, #8 | `git.py`, `tests/unit/test_git.py` | in progress |
 | fix-signals | `fix/signals` | review #8, #9, #10 | `signals.py`, `tests/unit/test_signals.py` | **merged** |
-| fix-inventory | `fix/inventory` | review #4, #11 | `inventory.py`, `tests/unit/test_inventory.py` | in progress |
+| fix-inventory | `fix/inventory` | review #4, #11 | `inventory.py`, `tests/unit/test_inventory.py` | **merged** |
 | fixture | `slice/fixture` | M13 | `tests/fixtures/**`, `tests/acceptance/**` | **merged** |
 
 The lead owns `model.py`, the schemas, `planner.py`, `runner.py`, `verdict.py`, `evidence.py`,

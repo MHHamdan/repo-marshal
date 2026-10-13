@@ -104,6 +104,10 @@ def done(
             None,
             None,
         )
+    except ValueError as e:  # e.g. duplicate gate ids from the inventory: fail closed
+        return DoneResult(
+            Verdict.UNKNOWN, (f"could not compile a trustworthy plan: {e}",), None, None, None
+        )
     if not dry_run:
         anchor.remember(root, base_sha, explicit=base is not None)
 
