@@ -106,6 +106,12 @@
         },
         "uncommitted": {
           "type": "boolean"
+        },
+        "opaque": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [
@@ -113,7 +119,8 @@
         "head",
         "tree_digest",
         "files",
-        "uncommitted"
+        "uncommitted",
+        "opaque"
       ]
     },
     "gate": {

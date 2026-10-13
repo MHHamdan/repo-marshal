@@ -56,6 +56,7 @@ from repomarshal import git
 from repomarshal.model import (
     DEFAULT_COST,
     KIND_ORDER,
+    ChangeSet,
     Gate,
     GateKind,
     Inventory,
@@ -415,7 +416,11 @@ def _availability(gate: Gate, repo: Path, path_env: str | None) -> Gate:
 
 
 def build_inventory(
-    repo: Path, base: str | None, policy: Policy, path_env: str | None = None
+    repo: Path,
+    base: str | None,
+    policy: Policy,
+    path_env: str | None = None,
+    change: ChangeSet | None = None,
 ) -> Inventory:
     """Gate inventory at BASE with availability and definition-change flags (see module doc).
 

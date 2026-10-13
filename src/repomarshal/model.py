@@ -177,6 +177,10 @@ class ChangeSet:
     tree_digest: str  # git tree id of the working tree (architecture §5.1)
     files: tuple[ChangedFile, ...]  # BASE tree -> working tree, sorted by path
     uncommitted: bool  # True when the working tree differs from HEAD
+    # Paths whose content RepoMarshal could not inspect (e.g. an embedded git repository, or
+    # files hidden by ignore rules that are not part of BASE). Any entry makes the verdict
+    # UNKNOWN: unseen content can never be verified.
+    opaque: tuple[str, ...] = ()
 
     @property
     def paths(self) -> tuple[str, ...]:

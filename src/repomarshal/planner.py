@@ -21,7 +21,7 @@ def compile_plan(
     base_sha = git.resolve_base(root, base)
     pol = policy.load_policy(root, base_sha)
     change = git.collect_changes(root, base_sha)
-    inv = inventory.build_inventory(root, base_sha, pol, path_env=path_env)
+    inv = inventory.build_inventory(root, base_sha, pol, path_env=path_env, change=change)
     # A binding plan is compiled from the diff alone. Task text only shapes a forecast (no diff
     # yet); in a binding plan it is recorded in `task` but never decides gates, risk or skills.
     # It therefore cannot remove a requirement in either mode (ADR-005).

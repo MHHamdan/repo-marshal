@@ -17,7 +17,10 @@ in its own git worktree with its own branch.
 | inventory | `slice/inventory` | M3, M4, M14 | `inventory.py`, `policy.py`, `tests/unit/test_inventory.py`, `tests/unit/test_policy.py` | **merged** |
 | planner | `slice/planner` | M5, M6, M7 | `signals.py`, `decisions.py`, `native.py` (run_* only), `tests/unit/test_signals.py`, `test_decisions.py`, `test_native.py` | **merged** |
 | context | `slice/context` | M8, M9 | `context.py`, `skills.py`, `tests/unit/test_context.py`, `test_skills.py` | **merged** |
-| review | `slice/review` | Step 4 | `tests/review/**` only (fail-open hunt) | in progress |
+| review | `slice/review` | Step 4 | `tests/review/**` only (fail-open hunt) | **merged**: 11 confirmed fail-open paths, 22 red `failopen` tests |
+| fix-git | `fix/git` | review #6, #7, #8 | `git.py`, `tests/unit/test_git.py` | in progress |
+| fix-signals | `fix/signals` | review #8, #9, #10 | `signals.py`, `tests/unit/test_signals.py` | in progress |
+| fix-inventory | `fix/inventory` | review #4, #11 | `inventory.py`, `tests/unit/test_inventory.py` | in progress |
 | fixture | `slice/fixture` | M13 | `tests/fixtures/**`, `tests/acceptance/**` | **merged** |
 
 The lead owns `model.py`, the schemas, `planner.py`, `runner.py`, `verdict.py`, `evidence.py`,
@@ -38,14 +41,22 @@ Done:
 
 ## Next step
 
-Step 4: launch a fresh reviewer agent with no prior context. Its only task is to find fail-open
-paths (any agent edit, missing tool, crash or timeout that yields PASS) and add a test for each.
-Then fix what it finds, re-run the suite, and report the v0.1 exit criteria to the owner.
+The fail-open review is merged. `pytest -m failopen` shows 22 tests that must turn green. The fixes
+are split up as follows:
+- **Three fix agents** work on the branches in the table: git ignore rules, embedded repos and
+  `--text` diffs; signals for renames, docs classification and hidden lines; inventory for tool
+  configs, delegated files and root-scope ids.
+- **The lead** fixes:
+  - #1: an empty change is UNKNOWN;
+  - #2: BASE is remembered in `.repomarshal/state/base.json` and combined with the automatic BASE
+    via merge-base, so a moved ref can only widen the diff;
+  - #3: the tree digest is checked after every gate;
+  - #5: `PYTHONSAFEPATH=1` for gates;
+  - #11: duplicate gate ids fail closed;
+  - `ChangeSet.opaque` forces UNKNOWN.
 
-Measured on 2026-10-13, with the installed console script on fixture copies (40 runs each):
-`repomarshal plan --json` median about 220 ms, p90 about 240 ms, max 273 ms, against the 300 ms
-target. A plan makes about 50 git subprocess calls (`cat-file -e` 24×). Batching them through
-`git cat-file --batch` is the obvious speed-up (follow-up, not v0.1).
+The suite must then be fully green, with `-m failopen` included, before the owner is told the exit
+criteria pass.
 
 ## Upstream repos inspected
 
