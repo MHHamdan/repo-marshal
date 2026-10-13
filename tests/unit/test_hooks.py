@@ -1,7 +1,9 @@
 """`repomarshal done --hook claude-code` (owner: agent "hosts"; roadmap SHOULD #6; ADR-003).
 
 Every non-PASS path must block the stop: exit 0 with exactly one JSON object
-{"decision": "block", "reason": ...} on stdout. PASS allows the stop with empty stdout. Each case
+{"decision": "block", "reason": ...} on stdout. PASS allows the stop with empty stdout. (The one
+exception, an exact repeat of a recorded block under stop_hook_active, is allowed with an
+UNVERIFIED systemMessage; see test_hook_loop.py.) Each case
 runs in-process (hooks.run) and as a subprocess (`python -m repomarshal done --hook claude-code`)
 against recorded Stop-hook payloads in tests/fixtures/hooks/.
 """

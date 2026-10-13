@@ -23,10 +23,36 @@ Implementation notes (agent "hosts"):
 - cwd vs --repo: `done --repo` defaults to None, so None (or "") means "not given" and the
   payload's `cwd` is used; a payload without a usable `cwd` blocks. Any explicit value, including
   `--repo .`, wins over the payload.
-- stop_hook_active: never used to allow a stop. When it is true the agent is already continuing
-  because of an earlier block; a non-PASS verdict blocks again with the current reason (fail
-  closed). This can loop until the change verifies: the user can always interrupt the agent (Esc)
-  or remove the hook from settings.
+- Loop termination (v0.3). Claude Code sets stop_hook_active on a Stop that follows a block.
+  Blocking every non-PASS stop loops forever when the agent cannot fix the change (a gate is
+  UNAVAILABLE). The ONLY allow on a non-PASS verdict is an exact repeat, and it is never silent:
+
+      allow  <=>  stop_hook_active is True (the JSON boolean)
+             and the payload has a non-empty string session_id
+             and api.done produced an evidence record whose verdict equals the result verdict,
+                 which is FAIL, UNKNOWN or BLOCKED
+             and the state file holds a valid entry for (session_id, hook_event_name) with the
+                 same verdict, the same evidence digest and count >= MIN_IDENTICAL_BLOCKS (1)
+
+  i.e. the stop is allowed on the SECOND identical stop: the first one always blocked. The
+  evidence digest is sha256 over plan_hash, tree_digest_after, the verdict, the sorted
+  (gate_id, status) pairs of the gate results and the sorted gate/kind labels of the verdict
+  reasons (never record_digest: it covers created_at). A changed tree, plan, verdict or gate set
+  gives a different digest and blocks again (and restarts the count). An allowed stop prints
+  {"systemMessage": "... UNVERIFIED ..."} (shown to the USER) built from the CURRENT run's
+  failing/unknown gates, with no decision, exit 0. A malformed payload, a missing evidence
+  record, an unreadable or invalid state entry, or any error blocks as before.
+- State (`.repomarshal/state/hook-blocks.json`, written after every non-PASS block):
+  {"version": 1, "sessions": {"<session_id>": {"event": "Stop", "verdict": "UNKNOWN",
+  "digest": "<64 hex>", "count": 2, "updated_at": "<UTC ISO-8601>"}}}, at most MAX_SESSIONS
+  entries (oldest dropped). The agent can write this file. The design makes that harmless: the
+  state is consulted only when stop_hook_active is True (set by Claude Code, not the agent); it
+  can only turn a block into an allowed stop for the digest api.done computes NOW, so the most a
+  forged entry achieves is what a second, unchanged stop achieves anyway (one block earlier): an
+  allowed stop whose systemMessage tells the user the change is UNVERIFIED and lists the real
+  current gates. It can never yield a silent stop or a PASS-looking one, and never let a FAIL
+  through unless the entry says FAIL with the current digest. No HMAC is used: any key the hook
+  can read, the agent (same user) can read too, so it would add no real protection.
 - The reason is bounded (MAX_ITEMS lines of at most MAX_LINE chars, MAX_REASON chars in total),
   control characters are stripped, and every piece taken from gate output, error messages or
   verdict reasons passes through runner.redact.
@@ -35,11 +61,14 @@ Implementation notes (agent "hosts"):
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
 import signal
 import sys
+import time
+from pathlib import Path
 from typing import Any
 
 from repomarshal import api
@@ -56,6 +85,14 @@ START_EVENTS = ("SessionStart",)
 MAX_ITEMS = 12  # gate lines listed in a reason
 MAX_LINE = 300  # characters per listed line
 MAX_REASON = 4000  # characters in the whole reason
+MAX_MESSAGE = 4000  # characters in an UNVERIFIED systemMessage
+
+STATE_FILE = ".repomarshal/state/hook-blocks.json"
+STATE_VERSION = 1
+MAX_SESSIONS = 64  # entries kept in the state file
+MIN_IDENTICAL_BLOCKS = 1  # identical blocks required before the repeat stop is allowed
+_LOOP_VERDICTS = (Verdict.FAIL, Verdict.UNKNOWN, Verdict.BLOCKED)
+_DIGEST = re.compile(r"[0-9a-f]{64}")
 
 _CONTROL = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x08\x0b-\x1f\x7f]")
 
@@ -101,8 +138,9 @@ def _block_reason(verdict: str, items: list[str], what_to_do: str, active: bool)
     if active:
         tail.append(
             "This stop was already blocked before (stop_hook_active); RepoMarshal blocks again "
-            "because the verdict is still not PASS. If you cannot resolve it, explain the blocker "
-            "to the user, who can interrupt."
+            "because the verdict is still not PASS and something changed since the last block "
+            "(or no earlier block is recorded). If you cannot resolve it, explain the blocker "
+            "to the user."
         )
     more = "- ... and {n} more (run `repomarshal done` to see all)"
     budget = MAX_REASON - len("\n".join(head + tail)) - len(more) - 8
@@ -147,6 +185,173 @@ def _emit_block(reason: str) -> int:
             sys.stderr.write(reason + "\n")
             sys.stderr.flush()
         return 2
+
+
+def _emit_unverified(message: str) -> int:
+    """Allow the stop, but tell the USER (systemMessage) that the change is UNVERIFIED. If stdout
+    is unusable the stop is blocked instead (exit 2): an allowed stop is never silent."""
+    payload = json.dumps({"systemMessage": message}, ensure_ascii=False)
+    try:
+        sys.stdout.write(payload + "\n")
+        sys.stdout.flush()
+        return 0
+    except Exception:  # noqa: BLE001 - could not tell the user: do not allow the stop
+        with contextlib.suppress(Exception):
+            sys.stderr.write(message + "\n")
+            sys.stderr.flush()
+        return 2
+
+
+def _unverified_message(verdict: Verdict, items: list[str], count: int) -> str:
+    head = [
+        f"RepoMarshal: this change is UNVERIFIED (verdict {verdict.value}). The agent stopped "
+        f"again with no change after {count} identical blocked stop(s), so RepoMarshal let it "
+        "stop. Do not treat the work as verified.",
+        "Failing and unknown gates:",
+    ]
+    tail = [
+        "Run `repomarshal plan --explain` to see why each gate is required, and "
+        "`repomarshal done` to re-check."
+    ]
+    budget = MAX_MESSAGE - len("\n".join(head + tail)) - 64
+    shown: list[str] = []
+    for item in items[:MAX_ITEMS]:
+        line = f"- {item}"
+        if len(line) + 1 > budget:
+            break
+        shown.append(line)
+        budget -= len(line) + 1
+    if len(items) > len(shown):
+        shown.append(f"- ... and {len(items) - len(shown)} more")
+    return "\n".join(head + shown + tail)[:MAX_MESSAGE]
+
+
+# ---------------------------------------------------------------------- block-loop state
+
+
+def evidence_digest(record: Any) -> str:
+    """Digest of what the verdict rests on: plan, tree, verdict, gate statuses and the labels of
+    the unverified gates. Excludes created_at (so not record_digest)."""
+    labels = sorted({str(r).split(": ", 1)[0] for r in record.verdict_reasons})
+    body = {
+        "plan_hash": record.plan_hash,
+        "tree_digest_after": record.tree_digest_after,
+        "verdict": Verdict(record.verdict).value,
+        "results": sorted([str(r.gate_id), ResultStatus(r.status).value] for r in record.results),
+        "unverified": labels,
+    }
+    text = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _load_state(root: Path) -> dict[str, Any]:
+    """The `sessions` map, or {} when the file is missing, unreadable or invalid."""
+    try:
+        data = json.loads((root / STATE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != STATE_VERSION:
+        return {}
+    sessions = data.get("sessions")
+    return dict(sessions) if isinstance(sessions, dict) else {}
+
+
+def _valid_entry(entry: Any, event: str) -> dict[str, Any] | None:
+    if not isinstance(entry, dict):
+        return None
+    verdict, digest, count = entry.get("verdict"), entry.get("digest"), entry.get("count")
+    if (
+        entry.get("event") != event
+        or verdict not in {v.value for v in _LOOP_VERDICTS}
+        or not isinstance(digest, str)
+        or not _DIGEST.fullmatch(digest)
+        or type(count) is not int
+        or count < 1
+    ):
+        return None
+    return entry
+
+
+def _save_state(root: Path, sessions: dict[str, Any]) -> None:
+    if len(sessions) > MAX_SESSIONS:
+        keep = sorted(
+            sessions.items(),
+            key=lambda kv: str(kv[1].get("updated_at", "")) if isinstance(kv[1], dict) else "",
+        )[-MAX_SESSIONS:]
+        sessions = dict(keep)
+    path = root / STATE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(
+        json.dumps({"version": STATE_VERSION, "sessions": sessions}, indent=1, sort_keys=True),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
+class _Loop:
+    """Previous-block bookkeeping for one Stop. Every failure degrades to "no previous block"
+    (which blocks); nothing here can turn a block into a silent stop."""
+
+    def __init__(self, target: str, payload: dict[str, Any], result: api.DoneResult):
+        self.root: Path | None = None
+        self.session: str | None = None
+        self.event = str(payload.get("hook_event_name") or "Stop")
+        self.digest: str | None = None
+        self.verdict = result.verdict
+        sid = payload.get("session_id")
+        record = result.record
+        if not (isinstance(sid, str) and sid.strip()) or record is None:
+            return
+        if result.verdict not in _LOOP_VERDICTS or record.verdict != result.verdict:
+            return
+        from repomarshal import git
+
+        try:
+            self.root = git.repo_root(target)
+            self.digest = evidence_digest(record)
+        except Exception:  # noqa: BLE001 - no digest: never allows, still blocks
+            self.root = self.digest = None
+            return
+        self.session = sid
+
+    def previous(self) -> dict[str, Any] | None:
+        if self.root is None or self.session is None:
+            return None
+        try:
+            return _valid_entry(_load_state(self.root).get(self.session), self.event)
+        except Exception:  # noqa: BLE001 - unreadable state: no previous block
+            return None
+
+    def repeat_count(self) -> int:
+        """Identical blocks recorded before this stop (0 when anything does not match)."""
+        prev = self.previous()
+        if prev is None or prev["verdict"] != self.verdict.value or prev["digest"] != self.digest:
+            return 0
+        return int(prev["count"])
+
+    def record_block(self) -> None:
+        if self.root is None or self.session is None or self.digest is None:
+            return
+        with contextlib.suppress(Exception):
+            sessions = _load_state(self.root)
+            count = self.repeat_count() + 1
+            sessions[self.session] = {
+                "event": self.event,
+                "verdict": self.verdict.value,
+                "digest": self.digest,
+                "count": count,
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            _save_state(self.root, sessions)
+
+    def forget(self) -> None:
+        if self.root is None or self.session is None:
+            return
+        with contextlib.suppress(Exception):
+            sessions = _load_state(self.root)
+            if sessions.pop(self.session, None) is not None:
+                _save_state(self.root, sessions)
 
 
 def _blocked(problem: str, active: bool = False) -> int:
@@ -223,6 +428,14 @@ def _claude_code(payload_text: str, repo: str | None, base: str | None) -> int:
     if result.verdict == Verdict.PASS:  # a PASS without a matching record is not trusted
         verdict = Verdict.UNKNOWN
     items = _items_from_done(result) or ["no reason was recorded"]
+
+    loop = _Loop(target, payload, result)
+    if active and verdict == result.verdict and loop.digest is not None:
+        count = loop.repeat_count()
+        if count >= MIN_IDENTICAL_BLOCKS:
+            loop.forget()  # the next non-PASS stop starts a new cycle with a block
+            return _emit_unverified(_unverified_message(verdict, items, count))
+    loop.record_block()
     return _emit_block(_block_reason(verdict.value, items, _WHAT_TO_DO[verdict], active))
 
 
