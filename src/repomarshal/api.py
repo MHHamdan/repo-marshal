@@ -157,6 +157,15 @@ def done(
         if gate is None:
             continue  # verdict.fold reports a REQUIRED gate without a result as UNKNOWN
         result = runner.run_gate(root, gate, p.change, env)
+        if d.taint and result.status != ResultStatus.UNKNOWN:
+            # v0.2 tamper signals: the change weakens what this gate runs (deleted or skipped
+            # tests, narrowed discovery). Its result cannot vouch for the change.
+            result = dataclasses.replace(
+                result,
+                status=ResultStatus.UNKNOWN,
+                reason="; ".join(t.text for t in d.taint)
+                + f"; was: {result.status.value} ({result.reason})",
+            )
         # Fail-open review #3: check the tree after EVERY gate. A gate that swaps files for later
         # gates (and a final gate that restores them) would otherwise go unnoticed.
         now = git.tree_digest(root, base=base_sha)

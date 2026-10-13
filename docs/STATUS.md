@@ -4,63 +4,43 @@ _Last updated: 2026-10-13_
 
 ## Current phase
 
-**Phase 6 (vertical slice) and the Step 4 adversarial review are complete** on branch
-`claude/v0.1-slice`. The v0.1 exit criteria are met, and the branch is waiting for the owner to merge
-it to main. Phases 7 (integrations), 8 (evidence hardening), 9 (hostile self-review) and 10 (run
-everything) come next.
+**v0.2 is in progress** on branch `claude/v0.2`, which branched from `origin/main` at f776979. v0.1
+is merged to main and was verified by the owner: 482 tests, plan median 178 ms, and the
+`"test": "exit 0"` attack gives UNKNOWN.
 
-**v0.1 exit criteria, measured on 2026-10-13:**
-- **Tests:** `.venv/bin/python -m pytest -o addopts="" -q` gives 481 passed, 1 skipped. The skip
-  needs an unreadable file, which root cannot create. All 22 `failopen` review tests are green.
-  `ruff check` and `ruff format --check` are clean.
-- **Cold start:** the installed `repomarshal plan --json` on the three demo fixtures, 40 runs each:
-  median 179–188 ms, worst run 233 ms, against the 300 ms target. A plan makes 31 git calls.
-- **README:** the demo table and the Scenario C `done` output come from real runs (A PASS, B PASS,
-  C UNKNOWN). They were re-verified after the fail-open fixes.
+v0.2 scope (from the owner): roadmap SHOULD #2 (tamper signals), #4 (CI and the CI recipe),
+#5 (`init`, `doctor`), #6 (Claude Code Stop hook) and #7 (MCP server).
 
-Agent and fix branches. All are merged and local only; the worktrees under `/home/user/wt-*` can be
-removed.
+Working model: the same as v0.1. The lead owns the contract and integration. One worktree and
+branch per agent, with disjoint file ownership. The lead merges one branch at a time, and only the
+lead pushes.
 
-| Agent | Branch | Items | Owns | Status |
+| Agent | Branch | Scope | Owns | Status |
 |---|---|---|---|---|
-| git | `slice/git` | M1, M2 | `src/repomarshal/git.py`, `tests/unit/test_git.py` | **merged** |
-| inventory | `slice/inventory` | M3, M4, M14 | `inventory.py`, `policy.py`, `tests/unit/test_inventory.py`, `tests/unit/test_policy.py` | **merged** |
-| planner | `slice/planner` | M5, M6, M7 | `signals.py`, `decisions.py`, `native.py` (run_* only), `tests/unit/test_signals.py`, `test_decisions.py`, `test_native.py` | **merged** |
-| context | `slice/context` | M8, M9 | `context.py`, `skills.py`, `tests/unit/test_context.py`, `test_skills.py` | **merged** |
-| review | `slice/review` | Step 4 | `tests/review/**` only (fail-open hunt) | **merged**: 11 confirmed fail-open paths, 22 red `failopen` tests |
-| fix-git | `fix/git` | review #6, #7, #8 | `git.py`, `tests/unit/test_git.py` | **merged** |
-| fix-signals | `fix/signals` | review #8, #9, #10 | `signals.py`, `tests/unit/test_signals.py` | **merged** |
-| fix-inventory | `fix/inventory` | review #4, #11 | `inventory.py`, `tests/unit/test_inventory.py` | **merged** |
-| fixture | `slice/fixture` | M13 | `tests/fixtures/**`, `tests/acceptance/**` | **merged** |
+| ci | `v02/ci` | CI workflow, dogfood job, CI recipe | `.github/workflows/ci.yml`, `docs/guides/ci.md` | in progress |
+| tamper | `v02/tamper` | tests.deleted, tests.skip_added, tests.discovery_narrowed, each producing a taint (UNKNOWN) | `signals.py`, `decisions.py`, `tests/unit/test_signals.py`, `test_decisions.py`, `tests/acceptance/test_tamper.py` | in progress |
+| hosts | `v02/hosts` | `init`, `doctor`, `done --hook claude-code` | `initcmd.py`, `doctor.py`, `hooks.py`, `tests/unit/test_initcmd.py`, `test_doctor.py`, `test_hooks.py`, `tests/fixtures/hooks/**` | in progress |
+| mcp | `v02/mcp` | the `repomarshal[mcp]` stdio server (plan, done, explain) | `mcp_server.py`, `tests/unit/test_mcp_server.py`, `pyproject.toml` (the `mcp` extra only) | in progress |
 
-The lead owns `model.py`, the schemas, `planner.py`, `runner.py`, `verdict.py`, `evidence.py`,
-`api.py`, `cli.py` and `tests/helpers.py`.
-
-Done:
-- **All five agent branches are merged.** The integration fixes: binding plans are compiled from the
-  diff alone (ADR-005), and stylesheets are exempt from `security.auth_path`.
-- Full suite: 364 passed, 1 skipped (root cannot create an unreadable file). Ruff check and format
-  are clean.
-- `README.md`, with the real demo output for Scenarios A, B and C (A PASS, B PASS, C UNKNOWN).
-- The lead's modules are committed with unit tests: `runner.py` and `verdict.py` (fail-closed),
-  plus `planner.compile_plan`, `api.plan` / `api.done`, `evidence.py`, `cli.py` and `render.py`.
-  They are wired to the agent modules, so they work end to end once those are merged.
-- The contract is committed: `pyproject.toml` (stdlib-only core; dev deps pytest, jsonschema and
-  ruff), `src/repomarshal/model.py` (IR dataclasses), JSON Schemas (M12), interface stubs with the
-  behaviour spec in each docstring, `tests/helpers.py` and `tests/unit/test_contract.py`.
+The contract is committed: `GateDecision.taint` (in the model and the schema; `done` turns a tainted
+gate's result into UNKNOWN), CLI dispatch for `init`, `doctor`, `done --hook` and `mcp`, the module
+stubs with their specs, and contract tests (stdlib-only core; `plan`/`done` never import the MCP or
+hook modules).
 
 ## Next step
 
-The owner merges `claude/v0.1-slice` to main. Then, in roadmap SHOULD order:
-1. test-tamper signals (`tests.deleted`, `tests.skip_added`, `tests.discovery_narrowed`);
-2. the remaining catalogue signals;
-3. a CI workflow for this repo plus the user-facing CI recipe;
-4. `init` / `doctor`;
-5. the Claude Code Stop-hook shim;
-6. the MCP server;
-7. the SkillSpector and Playwright adapters.
+Launch the four agents in worktrees `/home/user/wt-<agent>` on branches `v02/<agent>`, created from
+the contract commit. If resuming cold:
+1. Create those worktrees.
+2. Give each agent its row above, plus the module docstrings.
 
-Also open: threat-model T19 (agent-configured git filters).
+Afterwards:
+- merge the agent branches one at a time and run the full suite;
+- re-measure `plan` cold start, which must not regress from about 180 ms;
+- update the README, this file and the threat model;
+- run the fresh fail-open reviewer on the hooks, MCP and tamper code, fix its findings, and check
+  that CI on `claude/v0.2` is green (`gh api repos/MHHamdan/repo-marshal/actions/runs` works from
+  the cloud session).
 
 ## Upstream repos inspected
 

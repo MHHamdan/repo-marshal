@@ -280,13 +280,20 @@
             "string",
             "null"
           ]
+        },
+        "taint": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reason"
+          }
         }
       },
       "required": [
         "kind",
         "status",
         "reasons",
-        "gate_id"
+        "gate_id",
+        "taint"
       ]
     },
     "contextItem": {

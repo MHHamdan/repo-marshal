@@ -98,6 +98,8 @@ def test_core_package_imports_only_stdlib():
     pkg = Path(m.__file__).parent
     allowed = set(sys.stdlib_module_names) | {"repomarshal", "__future__"}
     for py in pkg.rglob("*.py"):
+        if py.name == "mcp_server.py":  # the optional extra's module; checked separately below
+            continue
         for node in ast.walk(ast.parse(py.read_text())):
             names = []
             if isinstance(node, ast.Import):
@@ -106,3 +108,18 @@ def test_core_package_imports_only_stdlib():
                 names = [node.module or ""]
             for n in names:
                 assert n.split(".")[0] in allowed, f"{py.name} imports non-stdlib {n}"
+
+
+def test_plan_and_done_paths_never_import_optional_extras():
+    """`repomarshal plan`/`done` must not load the MCP SDK or the hook/MCP modules (cold start)."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, repomarshal.cli, repomarshal.api, repomarshal.planner\n"
+        "bad = [m for m in sys.modules if m == 'mcp' or m.startswith('mcp.')\n"
+        "       or m in ('repomarshal.mcp_server', 'repomarshal.hooks')]\n"
+        "print(','.join(bad))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == ""

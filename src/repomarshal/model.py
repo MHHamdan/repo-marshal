@@ -269,6 +269,10 @@ class GateDecision:
     status: DecisionStatus
     reasons: tuple[Reason, ...]
     gate_id: str | None = None  # None for a kind-level decision (no matching gate)
+    # v0.2: reasons why this gate's result cannot be trusted even if it runs (e.g. the change
+    # deletes or skips tests the gate runs, or narrows test discovery). A REQUIRED gate with a
+    # non-empty taint still runs, but `done` reports its result as UNKNOWN.
+    taint: tuple[Reason, ...] = ()
 
 
 @dataclass(frozen=True)
