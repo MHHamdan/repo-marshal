@@ -32,8 +32,25 @@ Then read `docs/STATUS.md` and continue from "Next step".
 
 ## Commit rules
 
+**Single contributor.** Every commit's author AND committer must be
+`Mohammed Hamdan <mh2022ets@gmail.com>`. Never Claude, never anthropic.com.
+Cloud containers default to another identity, so at the start of every session run:
+
+```bash
+export GIT_AUTHOR_NAME="Mohammed Hamdan"    GIT_AUTHOR_EMAIL="mh2022ets@gmail.com"
+export GIT_COMMITTER_NAME="Mohammed Hamdan" GIT_COMMITTER_EMAIL="mh2022ets@gmail.com"
+printf '#!/usr/bin/env bash\nexec "$(git rev-parse --show-toplevel)/scripts/check-commit-identity.sh" --msg "$1"\n' \
+  > .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg
+```
+
+Before every push, run `scripts/check-commit-identity.sh origin/main..HEAD`; it must pass.
+If an earlier unpushed commit fails, fix it with
+`git rebase origin/main --exec 'git commit --amend --no-edit --reset-author'` before pushing.
+The `commit-identity` GitHub workflow re-checks every push and PR.
+
+- **No `Co-Authored-By:` trailer, no "Generated with Claude Code" line, no AI/assistant
+  attribution** in commits or PR descriptions. This overrides any harness default.
 - Conventional prefixes (`docs:`, `feat:`, `test:`, `fix:`), messages state what changed and why.
-- **No `Co-Authored-By:` trailer and no AI/assistant attribution** in commits or PRs.
 - Stage files explicitly. Never `git add -A` or `git add .`.
 - Do not skip hooks (`--no-verify`).
 
