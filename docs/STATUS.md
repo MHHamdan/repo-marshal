@@ -4,26 +4,30 @@ _Last updated: 2026-10-13_
 
 ## Current phase
 
-**Phase 1 (Research, MISSION.md §62) is complete.** Phase 2 (Product Definition, §63) is next.
-No implementation scaffolding exists yet.
+**Phase 1 (Research) is complete. Phase 2 (Product Definition, MISSION.md §63) is complete.**
+Phase 3 (Architecture, §64) is next. No implementation code exists yet.
 
 Phase 1 deliverables:
-- `docs/research/ecosystem-comparison.md`: the comparison matrix, the lessons learned, a revised
-  native-vs-provider table, and the name check.
-- `docs/research/gap-analysis.md`: answers to Q1–Q6, the unique value proposition, the premise
-  challenges, and the decision.
-- `docs/UPSTREAM_PROVENANCE.md`: SHA, license per component, integration method and obligations for
-  every upstream.
-- `docs/research/notes/`: raw evidence notes with `path:line` citations.
+- `docs/research/ecosystem-comparison.md`
+- `docs/research/gap-analysis.md`
+- `docs/UPSTREAM_PROVENANCE.md`
+- `docs/research/notes/`
+
+Phase 2 deliverables:
+- `docs/product-definition.md`: category, user, triggers, inputs, decisions, outputs and the verdict
+  table with exit codes, value, non-goals, and the v0.1 command set.
+- `LICENSE`: Apache-2.0.
 
 ## Next step
 
-Write `docs/product-definition.md` (MISSION.md §63). It needs these headings: product category,
-primary user, trigger, input, decision, output, value, non-goals.
+Phase 3: write `docs/architecture.md` and ADRs 001–005 (`docs/adr/`). Cover the component diagram
+(Mermaid), data flow, the Change Plan IR entities, providers, the planning algorithm, persistence
+under `.repomarshal/`, evidence flow, failure semantics, caching keys, the privacy and security
+boundaries, and the MCP surface.
 
-Take the positioning from the "Decision" section of `docs/research/gap-analysis.md`: a local-first
-change-plan compiler plus completion evaluator, not a harness. Then do Phase 3: `docs/architecture.md`
-and ADRs 001–005.
+ADR-001 must choose the core language. Python is the likely choice: the SkillSpector and AgentProof
+ecosystems, and the MCP Python SDK. Weigh it honestly against Go and TypeScript, mainly on startup
+latency and distribution.
 
 ## Upstream repos inspected
 
@@ -73,5 +77,10 @@ and ADRs 001–005.
   Hook shims start with Claude Code `Stop`.
 - **v0.1 real adapters:** SkillSpector (security) and Playwright (runtime). Reticle, Chisel, UI Skills,
   UI/UX Pro Max and AgentProof are PLANNED, with no stubs.
-- **Open:** the RepoMarshal license. Apache-2.0 is proposed, to stay compatible with Apache-2.0 prior
-  art; decide in Phase 2.
+- **License: Apache-2.0**, decided by the owner on 2026-10-13.
+- **Task text can only add requirements, never remove them.** The diff dominates, and the plan is
+  recompiled from the actual diff at completion time.
+- **Verdict precedence is BLOCKED > FAIL > UNKNOWN > PASS.** Exit codes are 0 for PASS, 1 for FAIL,
+  2 for UNKNOWN and 3 for BLOCKED. SKIPPED, NOT_APPLICABLE and WAIVED are never evidence.
+- **Pulling `main` into this branch uses merge, not rebase.** The branch is already pushed, and
+  CLAUDE.md forbids rewriting pushed history.
