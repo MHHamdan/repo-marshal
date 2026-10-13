@@ -18,7 +18,7 @@ v0.3 scope (from the owner):
 | Agent | Branch | Scope | Owns | Status |
 |---|---|---|---|---|
 | override | `v03/override` | waivers: `repomarshal waive`, GitHub label/review waivers in CI, dogfood job wiring | `src/repomarshal/waivers.py`, `tests/unit/test_waivers.py`, `.github/workflows/ci.yml`, `docs/guides/ci.md`, `docs/guides/waivers.md` | in progress |
-| hook-loop | `v03/hook-loop` | allow a stop on a repeated, unchanged non-PASS (with `systemMessage` UNVERIFIED); never on a new or worse verdict | `src/repomarshal/hooks.py`, `tests/unit/test_hooks.py`, `tests/unit/test_hook_loop.py` | in progress |
+| hook-loop | `v03/hook-loop` | allow a stop on a repeated, unchanged non-PASS (with `systemMessage` UNVERIFIED); never on a new or worse verdict | `src/repomarshal/hooks.py`, `tests/unit/test_hooks.py`, `tests/unit/test_hook_loop.py` | **merged** |
 | adapters | `v03/adapters` | SkillSpector (`skill_audit`) and Playwright (`runtime`) providers, plus the `agent.skill_changed` signal | `src/repomarshal/providers/**`, `tests/unit/test_provider_*.py`, the `agent.skill_changed` rule in `signals.py` | in progress |
 | field-test | `v03/field-test` | `plan` / `done --dry-run` on 5 real repositories; findings as fixtures plus failing tests | `docs/evaluation.md`, `tests/field/**`, `tests/fixtures/field/**` | in progress |
 
