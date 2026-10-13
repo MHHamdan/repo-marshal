@@ -121,5 +121,13 @@ def test_plan_and_done_paths_never_import_optional_extras():
         "       or m in ('repomarshal.mcp_server', 'repomarshal.hooks')]\n"
         "print(','.join(bad))"
     )
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    import os
+    from pathlib import Path
+
+    env = dict(os.environ)
+    src = str(Path(m.__file__).resolve().parents[1])  # works installed or from a source tree
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (src, env.get("PYTHONPATH", "")) if p)
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True, env=env
+    )
     assert out.stdout.strip() == ""

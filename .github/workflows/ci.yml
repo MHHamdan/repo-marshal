@@ -51,6 +51,23 @@ jobs:
       - name: ruff format
         run: ruff format --check src tests
 
+  mcp:
+    # The optional repomarshal[mcp] extra: the main test job runs without the SDK (its MCP tests
+    # skip), so this job installs the extra and runs the server tests for real.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -e ".[dev,mcp]"
+      - name: MCP server tests
+        run: python -m pytest -o addopts="" -q tests/unit/test_mcp_server.py tests/unit/test_contract.py
+
   dogfood:
     # The authoritative verdict: re-run `repomarshal done` where the coding agent cannot write.
     # No secrets are used here: the gates execute the PR's own code.
