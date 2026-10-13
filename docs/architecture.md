@@ -156,7 +156,7 @@ segment, extension or glob), its status, and its added or removed lines.
 
 | Signal id | Matches | Domain | Risk |
 |---|---|---|---|
-| `docs.changed` | `*.md`, `*.rst`, `*.txt` docs, or anything under `docs/` | docs | low |
+| `docs.changed` | Documentation file types only: `.md .markdown .rst .adoc`, README/LICENSE-style names, and docs formats or images under `docs/`. Other files under `docs/` go through the normal rules. `.mdx` is docs, code and `frontend.ui` | docs | low |
 | `code.changed` | Source extensions (`.py .ts .tsx .js .jsx .go .rs .java .rb …`) | code | standard |
 | `frontend.ui` | `.tsx .jsx .vue .svelte .css .scss .html`, or a `components/` path segment | frontend | standard |
 | `tests.changed` | Test files (`test_*.py`, `*_test.py`, `*.test.*`, `*.spec.*`, `tests/`, `__tests__/`) | tests | standard |
