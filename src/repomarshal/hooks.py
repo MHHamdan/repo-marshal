@@ -1,6 +1,6 @@
 """Agent host hook shims (owner: agent "hosts"; roadmap SHOULD #6; ADR-003).
 
-    run(host, payload_text, repo=".", base=None) -> int   (the process exit code)
+    run(host, payload_text, repo=None, base=None) -> int   (the process exit code)
 
 Claude Code `Stop` hook (host "claude-code"):
 - Input: the hook payload JSON on stdin (fields include session_id, transcript_path, cwd,
@@ -20,10 +20,9 @@ Implementation notes (agent "hosts"):
 - Output format: PASS -> empty stdout, exit 0. Every other path -> one line of JSON
   `{"decision": "block", "reason": ...}` on stdout, exit 0. If writing stdout itself fails, the
   reason goes to stderr and the exit code is 2 (Claude Code's other blocking channel).
-- cwd vs --repo: the CLI default for --repo is ".", which cannot be told apart from an explicit
-  `--repo .`. A `repo` of "." (or None/"") therefore means "not given" and the payload's `cwd` is
-  used; a payload without a usable `cwd` blocks. Any other value is an explicit --repo and wins over
-  the payload. To pin the hook to the hook process's own directory, pass an absolute path.
+- cwd vs --repo: `done --repo` defaults to None, so None (or "") means "not given" and the
+  payload's `cwd` is used; a payload without a usable `cwd` blocks. Any explicit value, including
+  `--repo .`, wins over the payload.
 - stop_hook_active: never used to allow a stop. When it is true the agent is already continuing
   because of an earlier block; a non-PASS verdict blocks again with the current reason (fail
   closed). This can loop until the change verifies: the user can always interrupt the agent (Esc)
@@ -151,7 +150,7 @@ def _blocked(problem: str, active: bool = False) -> int:
 
 
 def _repo_from(payload: dict[str, Any], repo: str | None) -> str | None:
-    if repo not in (None, "", "."):
+    if repo not in (None, ""):
         return repo
     cwd = payload.get("cwd")
     if isinstance(cwd, str) and cwd.strip():
@@ -197,7 +196,7 @@ def _claude_code(payload_text: str, repo: str | None, base: str | None) -> int:
     return _emit_block(_block_reason(verdict.value, items, _WHAT_TO_DO[verdict], active))
 
 
-def run(host: str, payload_text: str, repo: str = ".", base: str | None = None) -> int:
+def run(host: str, payload_text: str, repo: str | None = None, base: str | None = None) -> int:
     try:
         if host not in HOSTS:
             return _blocked(f"unsupported hook host {host!r} (supported: {', '.join(HOSTS)})")

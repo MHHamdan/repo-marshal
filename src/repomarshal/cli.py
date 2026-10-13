@@ -53,7 +53,9 @@ def _parser() -> argparse.ArgumentParser:
 
     dn = sub.add_parser("done", help="run the required gates and return a completion verdict")
     dn.add_argument("--task", default=None, help="task description (untrusted; add-only)")
-    dn.add_argument("--repo", default=".", help="repository path (default: .)")
+    dn.add_argument(
+        "--repo", default=None, help="repository path (default: .; with --hook: payload cwd)"
+    )
     dn.add_argument("--base", default=None, help="BASE revision (default: auto)")
     dn.add_argument("--json", action="store_true", help="machine-readable output")
     dn.add_argument("--dry-run", action="store_true", help="list the gates; run nothing")
@@ -139,7 +141,7 @@ def _plan(args: argparse.Namespace) -> int:
 
 
 def _done(args: argparse.Namespace) -> int:
-    r = api.done(args.repo, task=args.task, base=args.base, dry_run=args.dry_run)
+    r = api.done(args.repo or ".", task=args.task, base=args.base, dry_run=args.dry_run)
     if args.json:
         print(
             json.dumps(

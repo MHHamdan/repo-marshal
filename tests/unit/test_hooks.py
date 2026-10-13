@@ -39,7 +39,7 @@ def payload(cwd: Path | str | None, name: str = "claude_code_stop.json") -> str:
     return json.dumps(data)
 
 
-def run_inproc(w: Webapp | None, text: str, capsys, monkeypatch, repo: str = ".") -> tuple:
+def run_inproc(w: Webapp | None, text: str, capsys, monkeypatch, repo: str | None = None) -> tuple:
     if w is not None:
         monkeypatch.setenv("PATH", w.path_env)
     code = hooks.run("claude-code", text, repo=repo)
@@ -89,7 +89,7 @@ def invoke(mode, capsys, monkeypatch, tmp_path):
     def _invoke(w: Webapp, text: str, repo: str | None = None):
         if mode == "inproc":
             monkeypatch.chdir(elsewhere)
-            return run_inproc(w, text, capsys, monkeypatch, repo=repo or ".")
+            return run_inproc(w, text, capsys, monkeypatch, repo=repo)
         extra = ("--repo", repo) if repo else ()
         return run_subproc(w, text, elsewhere, *extra)
 
@@ -200,7 +200,7 @@ def test_explicit_repo_overrides_payload_cwd(webapp, invoke, tmp_path):
 
 
 def test_default_repo_uses_payload_cwd(webapp, invoke, tmp_path):
-    """--repo omitted (CLI default "."): the payload cwd decides, not the process cwd."""
+    """--repo omitted (CLI default None): the payload cwd decides, not the process cwd."""
     webapp.scenario_a_broken_link()
     reason = assert_blocks(*invoke(webapp, payload(webapp.root)))
     assert "native:docs-links" in reason
