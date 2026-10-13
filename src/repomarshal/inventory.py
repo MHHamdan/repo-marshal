@@ -12,11 +12,14 @@ v0.1 sources (precedence high -> low per (scope, kind)):
                                          from lockfile (pnpm-lock.yaml -> pnpm, yarn.lock -> yarn,
                                          bun.lock/bun.lockb -> bun, else npm). Ignore npm's
                                          placeholder test script ("no test specified").
-     pyproject.toml / ruff.toml / mypy.ini / pytest.ini / setup.cfg:
+     pyproject.toml / ruff.toml / mypy.ini / pytest.toml / pytest.ini / setup.cfg:
                                          [tool.ruff] or ruff.toml -> lint ["ruff","check","."];
                                          [tool.mypy] or mypy.ini -> typecheck ["mypy","."];
                                          [tool.pyright] -> typecheck ["pyright"];
-                                         [tool.pytest.ini_options], pytest.ini, or
+                                         pytest.toml, .pytest.toml, pytest.ini,
+                                         .pytest.ini, [tool.pytest.ini_options],
+                                         [tool.pytest], tox.ini [pytest],
+                                         setup.cfg [tool:pytest], or
                                          tests/test_*.py -> unit
                                          ["python","-m","pytest","-q"];
                                          if tests/integration/ exists: unit adds
@@ -40,7 +43,8 @@ definition_changed=True. Native gates never change.
 M14 also covers files the gate's tool reads or executes, compared as "any change" via the change
 set (added, modified, deleted or renamed; both path and old_path count):
   * the tool's definition file set within the gate scope (_is_definition_file below), e.g.
-    conftest.py for pytest, ruff.toml for ruff, tsconfig*.json / .npmrc for package.json scripts;
+    conftest.py and pytest.toml / pytest.ini for pytest, ruff.toml for ruff, tsconfig*.json /
+    .npmrc for package.json scripts;
   * repository files named by the BASE command: tokens of the package.json script body and its
     pre/post hooks (shlex), or the argv of a policy gate, resolved relative to the gate cwd.
 package.json, pyproject.toml and repomarshal.toml stay compared semantically (above), and paths
@@ -87,7 +91,10 @@ from repomarshal.policy import POLICY_FILE
 PYTHON_MANIFESTS = (
     "pyproject.toml",
     "setup.cfg",
+    "pytest.toml",
+    ".pytest.toml",
     "pytest.ini",
+    ".pytest.ini",
     "tox.ini",
     "mypy.ini",
     ".mypy.ini",
@@ -123,7 +130,17 @@ PYRIGHT_GATE = "pyright"
 SCRIPT_GATE = "script"
 POLICY_GATE = "policy"
 
-PYTEST_FILES = frozenset({"conftest.py", "pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg"})
+PYTEST_FILES = frozenset(
+    {
+        "conftest.py",
+        "pytest.toml",
+        ".pytest.toml",
+        "pytest.ini",
+        ".pytest.ini",
+        "tox.ini",
+        "setup.cfg",
+    }
+)
 RUFF_FILES = frozenset({"ruff.toml", ".ruff.toml"})
 MYPY_FILES = frozenset({"mypy.ini", ".mypy.ini", "setup.cfg"})
 SCRIPT_CONFIG_PREFIXES = (
@@ -253,11 +270,17 @@ PYRIGHT_CHAIN = (
     _file_lookup("pyrightconfig.json"),
     _table_lookup("pyproject.toml", "toml", ("tool", "pyright"), "tool.pyright"),
 )
+# pytest's own precedence within a directory (pytest >= 9 reads pytest.toml / .pytest.toml
+# first, even when empty).
 PYTEST_CHAIN = (
+    _file_lookup("pytest.toml"),
+    _file_lookup(".pytest.toml"),
     _file_lookup("pytest.ini"),
+    _file_lookup(".pytest.ini"),
     _table_lookup(
         "pyproject.toml", "toml", ("tool", "pytest", "ini_options"), "tool.pytest.ini_options"
     ),
+    _table_lookup("pyproject.toml", "toml", ("tool", "pytest"), "tool.pytest"),
     _table_lookup("tox.ini", "ini", ("pytest",), "pytest"),
     _table_lookup("setup.cfg", "ini", ("tool:pytest",), "tool:pytest"),
 )
