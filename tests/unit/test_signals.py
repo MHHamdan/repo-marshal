@@ -900,3 +900,367 @@ def test_agent_config_changed_fires_for_agent_files():
     ):
         assert "agent.config_changed" in _ids_for(p), p
     assert "agent.config_changed" not in _ids_for("docs/agents.md")
+
+
+# ---- v0.2 fail-open review #7 / #8: evasions of the tamper signals
+
+ALIASED_SKIPS_PY = [
+    ("import pytest as pt", "@pt.mark.skip"),
+    ("from pytest import mark as m", "@m.skip"),
+    ("from pytest import mark as m", "@m.xfail(strict=False)"),
+    ("import pytest", "@pytest .mark .skip"),
+    ("import pytest", "@pytest.mark.ｓｋｉｐ"),  # fullwidth: NFKC makes it `skip`
+    ("import pytest", "@ｐｙｔｅｓｔ.mark.skip"),
+    ("import pytest", 'pytest.importorskip("no_such_module")'),
+    ("from pytest import importorskip", 'importorskip("x")'),
+    ("from pytest import skip as later", "    later('x')"),
+    ("from pytest import *", "@mark.skipif(True, reason='x')"),
+    ("import pytest", "m = pytest.mark", "s = m.skipif", "@s(True, reason='x')"),
+    ("from pytest import (", "    mark as m,", ")", "@m.skip"),
+    ("import unittest as ut", "@ut.skip('x')"),
+    ("from unittest import skip as later", "@later('x')"),
+    ("import unittest", "@unittest.expectedFailure"),
+    ("import pytest", 'deco = getattr(pytest.mark, "skip")'),
+    ("__test__ = False",),
+    ("class TestX:", "    __test__ = 0"),
+]
+
+
+@pytest.mark.parametrize("lines", ALIASED_SKIPS_PY)
+def test_aliased_and_obfuscated_python_skips(lines):
+    assert "tests.skip_added" in tamper(cs(edit("backend/tests/test_x.py", added=lines)))
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("import pytest as pt", "@pt.mark.parametrize('x', [1, 2])"),
+        ("from pytest import mark as m", "@m.slow"),
+        ("from pytest import approx", "assert 0.1 + 0.2 == approx(0.3)"),
+        ("obj = Thing()", "obj.skip()"),  # not derived from pytest/unittest
+        ("def test_importorskip_name():",),
+        ("__test__ = True",),
+        ("if x == __test__:",),
+        ("from unittest import mock", "@mock.patch('a.b')"),
+        ("import pytest", "x = pytest . approx(1)"),
+    ],
+)
+def test_aliases_without_skip_are_quiet(lines):
+    assert "tests.skip_added" not in tamper(cs(edit("backend/tests/test_x.py", added=lines)))
+
+
+def test_alias_from_base_content(tmp_path):
+    r = GitRepo(tmp_path / "a")
+    r.write("tests/test_a.py", "import pytest as pt\n\n\ndef test_x():\n    pass\n")
+    base = r.commit("base")
+    f_ = edit("tests/test_a.py", added=("@pt.mark.skip",))
+    s = signals_by_id(cs(f_, base=base), repo=r.root)
+    assert "tests/test_a.py adds pytest.mark.skip" in s["tests.skip_added"].detail
+
+
+def test_skip_markers_resolves_given_aliases():
+    names = sig.py_aliases(["import pytest as pt"])
+    assert sig.skip_markers("@pt.mark.skip", "py", names) == ("pytest.mark.skip",)
+    assert sig.skip_markers("@pt.mark.skip", "py") == ()  # no alias known
+    assert sig.skip_markers("@pytest .mark .skip", "py") == ("pytest.mark.skip",)
+
+
+def test_moved_aliased_marker_is_not_new():
+    a = edit("tests/test_a.py", removed=("@pytest.mark.skip", "def test_x():"))
+    b = edit("tests/test_b.py", added=("@pytest .mark .skip", "def test_x():"))
+    assert tamper(cs(a, b)) == {}
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ('const focus = "only";', 'test[focus]("smoke", () => {});'),
+        ('test["only"]("smoke", () => {});',),
+        ("const t = test;", 't.only("smoke", () => {});'),
+        ('import { test as t } from "vitest";', 't.skip("smoke", () => {});'),
+        ("const { only } = test;", 'only("smoke", () => {});'),
+        ('it .skip("smoke", () => {});',),
+    ],
+)
+def test_js_computed_and_aliased_markers(lines):
+    path = "frontend/src/components/LoginForm.test.tsx"
+    assert "tests.skip_added" in tamper(cs(edit(path, added=lines)))
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("const tests = [1, 2];", "expect(tests[0]).toBe(1);"),
+        ("const t = test;", 't("smoke", () => {});'),
+        ("const { each } = test;",),
+        ('import { test, expect } from "vitest";',),
+    ],
+)
+def test_js_aliases_without_markers_are_quiet(lines):
+    path = "frontend/src/components/LoginForm.test.tsx"
+    assert "tests.skip_added" not in tamper(cs(edit(path, added=lines)))
+
+
+# tests.deleted: a "move" only counts when the destination is collected
+
+COLLECT_BASE = {
+    "backend/pyproject.toml": '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n',
+    "backend/tests/test_refresh.py": (
+        "def test_keep():\n    pass\n\n\ndef test_moved():\n    pass\n"
+    ),
+}
+
+
+@pytest.fixture
+def crepo(tmp_path):
+    r = GitRepo(tmp_path / "c")
+    for path, text in COLLECT_BASE.items():
+        r.write(path, text)
+    return r, r.commit("base")
+
+
+def _moved_to(r: GitRepo, base: str, dest: str) -> dict:
+    src = edit("backend/tests/test_refresh.py", removed=("def test_moved():", "    pass"))
+    dst = edit(dest, added=("def test_moved():", "    pass"), status=A)
+    return tamper(cs(src, dst, base=base), repo=r.root)
+
+
+@pytest.mark.parametrize(
+    "dest",
+    [
+        "backend/attic/test_refresh.py",  # outside testpaths
+        "backend/tests/build/test_refresh.py",  # default norecursedirs
+        "backend/tests/.cache/test_refresh.py",
+        "backend/tests/node_modules/test_refresh.py",
+        "backend/tests/x.egg/test_refresh.py",
+        "backend/tests/helpers.py",  # not python_files
+        "backend/tests/conftest.py",
+    ],
+)
+def test_move_to_an_uncollected_destination_is_a_deletion(crepo, dest):
+    r, base = crepo
+    assert "tests.deleted" in _moved_to(r, base, dest)
+
+
+@pytest.mark.parametrize(
+    "dest",
+    [
+        "backend/tests/test_moved.py",
+        "backend/tests/unit/test_moved.py",
+        "backend/tests/unit/moved_test.py",
+        "backend/tests/integration/test_moved.py",
+    ],
+)
+def test_move_to_a_collected_destination_is_not_a_deletion(crepo, dest):
+    r, base = crepo
+    assert _moved_to(r, base, dest) == {}
+
+
+def test_rename_out_of_testpaths_is_a_deletion(crepo):
+    r, base = crepo
+    f_ = ChangedFile("backend/attic/test_refresh.py", R, old_path="backend/tests/test_refresh.py")
+    s = signals_by_id(cs(f_, base=base), repo=r.root)
+    assert "test_moved" in s["tests.deleted"].detail
+    f_ = ChangedFile("backend/tests/unit/test_refresh.py", R, old_path=f_.old_path)
+    assert "tests.deleted" not in tamper(cs(f_, base=base), repo=r.root)
+
+
+@pytest.mark.parametrize(
+    ("config_path", "config", "collected", "uncollected"),
+    [
+        (
+            "backend/pytest.toml",  # pytest >= 9, beats pyproject.toml
+            '[pytest]\ntestpaths = ["checks"]\n',
+            "backend/checks/test_m.py",
+            "backend/tests/test_m.py",
+        ),
+        (
+            "backend/pytest.ini",
+            "[pytest]\ntestpaths = tests/u*\npython_files = check_*.py\n",
+            "backend/tests/unit/check_m.py",
+            "backend/tests/unit/test_m.py",
+        ),
+        (
+            "backend/.pytest.ini",
+            "[pytest]\ntestpaths = tests\nnorecursedirs = legacy\n",
+            "backend/tests/build/test_m.py",  # norecursedirs replaced: build is collected
+            "backend/tests/legacy/test_m.py",
+        ),
+    ],
+)
+def test_collection_follows_the_base_config(tmp_path, config_path, config, collected, uncollected):
+    r = GitRepo(tmp_path / "k")
+    r.write("backend/tests/test_refresh.py", COLLECT_BASE["backend/tests/test_refresh.py"])
+    r.write("backend/pyproject.toml", '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')
+    r.write(config_path, config)
+    base = r.commit("base")
+    assert _moved_to(r, base, collected) == {}
+    assert "tests.deleted" in _moved_to(r, base, uncollected)
+
+
+def test_collection_without_any_config_uses_pytest_defaults(tmp_path):
+    r = GitRepo(tmp_path / "n")
+    r.write("README.md", "x\n")
+    base = r.commit("base")
+    src = edit("tests/test_a.py", removed=("def test_x():",))
+    ok = edit("lib/test_b.py", added=("def test_x():",), status=A)
+    assert tamper(cs(src, ok, base=base), repo=r.root) == {}
+    hidden = edit("tests/dist/test_b.py", added=("def test_x():",), status=A)
+    assert "tests.deleted" in tamper(cs(src, hidden, base=base), repo=r.root)
+
+
+def test_move_to_an_uncollected_js_file_is_a_deletion():
+    src = edit("src/a.test.ts", removed=('it("works", () => {})',))
+    helper = edit("src/__fixtures__/helpers.ts", added=('it("works", () => {})',), status=A)
+    assert "tests.deleted" not in tamper(cs(src, edit("src/b.test.ts", added=helper.added)))
+    assert "tests.deleted" in tamper(cs(src, edit("tests/helpers.ts", added=helper.added)))
+
+
+# tests.discovery_narrowed: jest keys, pytest.toml, scripts and Makefiles
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"jest": {"roots": ["<rootDir>/nothing"]}},
+        {"jest": {"rootDir": "src/empty"}},
+        {"jest": {"modulePathIgnorePatterns": ["components"]}},
+        {"jest": {"testNamePattern": "smoke"}},
+        {"jest": {"projects": ["<rootDir>/a"]}},
+        {"scripts": {"test": "vitest run src/login"}},
+        {"scripts": {"test": "vitest related src/a.ts"}},
+        {"scripts": {"test": "VITEST_SEGFAULT_RETRY=1 vitest"}},
+        {"scripts": {"test:unit": "npm test -- -t login"}},
+        {"scripts": {"test:unit": "pnpm test src/login"}},
+    ],
+)
+def test_package_json_v02_narrowing(trepo, changes):
+    r, base = trepo
+    _pkg(r, **changes)
+    assert _narrowed(r, base, f("frontend/package.json"))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"jest": {"roots": ["<rootDir>", "<rootDir>/extra"]}},  # wider
+        {"jest": {"roots": ["<rootDir>"]}},  # the default
+        {"jest": {"modulePathIgnorePatterns": []}},
+        {"scripts": {"test": "vitest run"}},
+        {"scripts": {"test": "vitest --reporter verbose"}},
+        {"scripts": {"test:unit": "npm test"}},
+        {"scripts": {"build": "npm run compile -- --mode production"}},
+        {"scripts": {"setup": "pnpm install && pip install pytest pytest-cov"}},
+    ],
+)
+def test_package_json_v02_not_narrowing(trepo, changes):
+    r, base = trepo
+    _pkg(r, **changes)
+    assert not _narrowed(r, base, f("frontend/package.json"))
+
+
+def test_jest_config_module_roots_change_narrows(trepo):
+    r, base = trepo
+    r.write("frontend/jest.config.js", "module.exports = {\n  roots: ['<rootDir>/x'],\n};\n")
+    assert _narrowed(r, base, edit("frontend/jest.config.js", added=("  roots: ['<rootDir>/x'],",)))
+
+
+@pytest.mark.parametrize("name", ["pytest.toml", ".pytest.toml"])
+def test_pytest_toml_narrowing(trepo, name):
+    r, base = trepo
+    path = f"backend/{name}"
+    r.write(path, '[pytest]\naddopts = ["-k", "not expired"]\n')
+    assert _narrowed(r, base, f(path, A))
+    r.write(path, '[pytest]\ntestpaths = ["tests/unit"]\n')
+    assert _narrowed(r, base, f(path, A))
+    r.write(path, '[pytest]\naddopts = ["-q"]\n')
+    assert not _narrowed(r, base, f(path, A))
+    r.write(path, "[pytest\n")
+    assert _narrowed(r, base, f(path, A))  # unparsable: fail closed
+
+
+def test_addopts_positional_path_narrows(trepo):
+    r, base = trepo
+    r.write("backend/pyproject.toml", BACKEND_PYPROJECT.replace('"-q"', '"-q tests/unit"'))
+    assert _narrowed(r, base, f("backend/pyproject.toml"))
+
+
+MAKE_BASE = "test:\n\tpython -m pytest -q\n\tnpm test\n"
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        "test:\n\tPYTEST_ADDOPTS='-k smoke' python -m pytest -q\n\tnpm test\n",
+        "export PYTEST_ADDOPTS = -k smoke\ntest:\n\tpython -m pytest -q\n\tnpm test\n",
+        "test:\n\tpython -m pytest -q\n\tJEST_FILTER=x npm test\n",
+        "test:\n\tpython -m pytest -q tests/test_smoke.py\n\tnpm test\n",
+        "test:\n\tpython -m pytest -q \\\n\t\t-k smoke\n\tnpm test\n",  # continuation line
+        "test:\n\tpython -m pytest -q\n\tnpm test -- -t smoke\n",
+        "test:\n\tpython -m pytest -q\n\tnpm test -- --testNamePattern smoke\n",
+        "test:\n\tpython -m pytest -q\n\tnpm run test -- src/login\n",
+        "test:\n\tpython -m pytest -q\n\tyarn test -t smoke\n",
+        "test:\n\tpython -m pytest -q\n\tnpx jest src/login\n",
+    ],
+)
+def test_makefile_v02_narrowing(tmp_path, after):
+    r = GitRepo(tmp_path / "m")
+    r.write("Makefile", MAKE_BASE)
+    base = r.commit("base")
+    r.write("Makefile", after)
+    before_lines, after_lines = MAKE_BASE.splitlines(), after.splitlines()
+    f_ = edit(
+        "Makefile",
+        added=tuple(ln for ln in after_lines if ln not in before_lines),
+        removed=tuple(ln for ln in before_lines if ln not in after_lines),
+    )
+    assert _narrowed(r, base, f_)
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        MAKE_BASE + "\nlint:\n\truff check .\n",
+        "test:\n\t@python -m pytest -q\n\tnpm test\n",  # same command
+        "test:\n\tpython -m pytest -q -x --cov app\n\tnpm test\n",
+        "test:\n\tpython -m pytest -q > out.txt 2>&1\n\tnpm test\n",
+        "test:\n\tpython -m pytest -q -p no:cacheprovider\n\tnpm test\n",
+        "test:\n\tpython -m pytest -q\n\tnpm test -- --ci\n",
+        "test:\n\tpython -m pytest -q\n\tnpm ci && npm test\n",
+        "install:\n\tpip install pytest pytest-cov\n" + MAKE_BASE,
+    ],
+)
+def test_makefile_v02_not_narrowing(tmp_path, after):
+    r = GitRepo(tmp_path / "m")
+    r.write("Makefile", MAKE_BASE)
+    base = r.commit("base")
+    r.write("Makefile", after)
+    before_lines, after_lines = MAKE_BASE.splitlines(), after.splitlines()
+    f_ = edit(
+        "Makefile",
+        added=tuple(ln for ln in after_lines if ln not in before_lines),
+        removed=tuple(ln for ln in before_lines if ln not in after_lines),
+    )
+    assert not _narrowed(r, base, f_)
+
+
+def test_shell_script_narrowing(tmp_path):
+    r = GitRepo(tmp_path / "s")
+    r.write("scripts/test.sh", "#!/bin/sh\npytest -q\n")
+    base = r.commit("base")
+    r.write("scripts/test.sh", "#!/bin/sh\npytest -q tests/test_smoke.py\n")
+    f_ = edit("scripts/test.sh", added=("pytest -q tests/test_smoke.py",), removed=("pytest -q",))
+    assert _narrowed(r, base, f_)
+
+
+def test_command_narrowing_v02():
+    assert sig.command_narrowing("pytest -q tests/test_a.py") == {
+        (sig.POSITIONAL, "tests/test_a.py"): 1
+    }
+    assert sig.command_narrowing("npm test -- -t smoke") == {("-t", "smoke"): 1}
+    assert sig.command_narrowing("npm test -t smoke") == {}  # npm keeps it before `--`
+    assert sig.command_narrowing("pnpm exec jest -t x") == {("-t", "x"): 1}
+    assert sig.command_narrowing("vitest run") == {}
+    assert sig.command_narrowing("pip install pytest") == {}
+    (key,) = sig.command_narrowing("PYTEST_ADDOPTS='-k x' pytest")
+    assert key[0] == "PYTEST_ADDOPTS="

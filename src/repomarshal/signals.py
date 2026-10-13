@@ -37,24 +37,39 @@ decisions.decide_gates taints the test-running gates whose scope covers their fi
 source" is a tests.changed path with a Python or JS/TS extension; its lines are what the
 definition and marker patterns below are matched against.
 - tests.deleted: a test source loses test definitions (removed lines minus the same definitions
-  re-added in that file). A definition re-added in another changed test file is a move, not a
-  deletion (matched by name, change-set wide, counted). A deleted test file, or a test file
-  renamed to a path no runner collects, loses every definition it had at BASE; a rename between
-  test paths is analysed like an edit. A deleted or renamed-away test file in a language whose
-  definitions are not parsed (e.g. `_test.go`) always fires. Fails closed on hidden lines.
-- tests.skip_added: added skip, disable or focus markers in a test source. Strings and comments
-  are blanked first, so a test named `test_skip_expired` or a title "skips x" is not a marker. A
-  marker line also removed elsewhere in the change set (same code once strings are blanked) is a
-  move. Fails closed on hidden added lines.
-- tests.discovery_narrowed: a pytest config (pyproject.toml, pytest.ini, .pytest.ini, tox.ini,
-  setup.cfg), a jest config in package.json or jest.config.json, or package.json scripts are
+  re-added in that file). A definition re-added in another changed test file that the runner
+  collects is a move, not a deletion (matched by name, change-set wide, counted). A deleted test
+  file, or a test file renamed to a path no runner collects, loses every definition it had at
+  BASE; a rename between collected paths is analysed like an edit. "Collected" for a .py file
+  follows the BASE pytest config of the nearest ancestor directory that has one: inside its
+  testpaths, under no norecursedirs directory (pytest's defaults: .*, build, dist, venv, ...)
+  and matching python_files; other files are collected by name (COLLECTED_TEST_GLOBS). A deleted
+  or renamed-away test file in a language whose definitions are not parsed (e.g. `_test.go`)
+  always fires. Fails closed on hidden lines.
+- tests.skip_added: added skip, disable or focus markers in a test source. Lines are
+  NFKC-normalised, strings and comments blanked and whitespace around `.` dropped, so a test
+  named `test_skip_expired` or a title "skips x" is not a marker but `@pytest .mark .ｓｋｉｐ` is.
+  Local aliases are resolved from the file's BASE content plus its added lines (`import pytest
+  as pt`, `from pytest import mark as m`, `skip = pytest.mark.skip`, `const t = test`): any skip
+  attribute on a pytest/unittest-derived name is a marker, as are pytest.importorskip(,
+  `__test__ = False` and a computed JS modifier (`test[name](...)`). A marker line also removed
+  elsewhere in the change set (same code once normalised) is a move. Fails closed on hidden
+  added lines.
+- tests.discovery_narrowed: a pytest config (pytest.toml, .pytest.toml, pyproject.toml,
+  pytest.ini, .pytest.ini, tox.ini, setup.cfg), a jest config in package.json or jest.config.json
+  (testMatch, testRegex, roots, rootDir, projects, testPathIgnorePatterns,
+  modulePathIgnorePatterns, ...), or package.json scripts are
   parsed at BASE and in the working tree and compared: a selection list (testpaths,
   python_files, ...) narrows when an effective BASE entry is gone (an absent key means the
   runner's default, and an absent testpaths means "everything"); an exclusion list narrows when
   it gains an entry; addopts and scripts narrow when they gain a narrowing option. JS config
   files (jest/vitest/vite config modules) cannot be parsed: any added or removed line inside one
-  of the keys fires. Makefiles: an added pytest/jest command line with a narrowing option not on
-  a removed line fires. A worktree file that cannot be read or parsed fires (fail closed).
+  of the keys fires. Makefiles, justfiles and shell scripts: a command added or changed (diff
+  lines, and BASE vs worktree with continuation lines joined) that narrows a runner fires: a
+  narrowing option, a positional test path given to pytest/jest/vitest, a PYTEST_ADDOPTS= /
+  JEST_* / VITEST_* variable, or narrowing arguments passed through a package-manager script
+  (`npm test -- -t x`). Scripts and addopts are read the same way. A worktree file that cannot
+  be read or parsed fires (fail closed).
 - Notes ("<path> <what>", one per file) name tests and options, never values or other content.
 """
 
@@ -67,6 +82,7 @@ import posixpath
 import re
 import shlex
 import tomllib
+import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -177,7 +193,8 @@ SENSITIVE_IDENTIFIER_RE = re.compile(
 BUILD_CONFIG_NAMES: frozenset[str] = frozenset(
     {
         "package.json", "pyproject.toml", "setup.cfg", "setup.py", "makefile", "gnumakefile",
-        "tox.ini", "noxfile.py", "pytest.ini", "mypy.ini", ".mypy.ini", "ruff.toml",
+        "tox.ini", "noxfile.py", "pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml",
+        "mypy.ini", ".mypy.ini", "ruff.toml",
         ".ruff.toml", ".flake8", ".pylintrc", ".eslintrc", ".prettierrc", ".babelrc",
         ".editorconfig", "go.mod", "cargo.toml", "dockerfile", ".npmrc", ".nvmrc",
         ".python-version",
@@ -304,17 +321,47 @@ PY_SKIP_MARKER_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"^\s*@skip(?:If|Unless)?\b"),  # from unittest import skip
     re.compile(r"\bSkipTest\b"),  # raise unittest.SkipTest
     re.compile(r"\.skipTest\s*\("),  # self.skipTest(
+    re.compile(r"\bimportorskip\s*\("),  # pytest.importorskip("mod") skips the whole module
+    re.compile(r"\b__test__\s*=(?!=)(?!\s*True\b)"),  # __test__ = False: not collected
 )
-JS_SKIP_MARKER_RES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"(?<![\w$.])(?:it|test|describe)(?:\.\w+)*\.(?:skip\w*|todo)\b"),  # it.skip
-    re.compile(r"(?<![\w$.])x(?:it|test|describe)\s*[(.]"),  # xit( xdescribe(
-    # focus markers: everything else in the file is silently excluded
-    re.compile(r"(?<![\w$.])(?:it|test|describe)(?:\.\w+)*\.only\b"),  # it.only
-    re.compile(r"(?<![\w$.])f(?:it|describe)\s*[(.]"),  # fit( fdescribe(
-)
+# Alias-aware Python detection: a name bound (import, from-import, assignment) to one of these
+# modules or their attributes is resolved to its dotted target; any skip attribute on the target
+# is a marker (`import pytest as pt; @pt.mark.skip`, `from pytest import mark as m; @m.xfail`).
+PY_SKIP_MODULES: frozenset[str] = frozenset({"pytest", "_pytest", "unittest"})
+PY_SKIP_ATTRS: frozenset[str] = frozenset(
+    {
+        "skip", "skipif", "xfail", "importorskip", "skipIf", "skipUnless", "SkipTest",
+        "skipTest", "expectedFailure",
+    }
+)  # fmt: skip
+# Bound by `from pytest import *` (and the unittest equivalent).
+PY_STAR_NAMES: tuple[str, ...] = (
+    "mark", "skip", "xfail", "importorskip", "skipIf", "skipUnless", "SkipTest", "expectedFailure",
+)  # fmt: skip
+JS_TEST_FUNCTIONS: tuple[str, ...] = ("it", "test", "describe")
+
+
+@cache
+def _js_skip_marker_res(names: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    """JS marker regexes for the test functions `names` (it/test/describe plus local aliases)."""
+    fn = "(?:" + "|".join(re.escape(n) for n in names) + ")"
+    return (
+        re.compile(rf"(?<![\w$.]){fn}(?:\.\w+)*\.(?:skip\w*|todo)\b"),  # it.skip
+        re.compile(r"(?<![\w$.])x(?:it|test|describe)\s*[(.]"),  # xit( xdescribe(
+        # focus markers: everything else in the file is silently excluded
+        re.compile(rf"(?<![\w$.]){fn}(?:\.\w+)*\.only\b"),  # it.only
+        re.compile(r"(?<![\w$.])f(?:it|describe)\s*[(.]"),  # fit( fdescribe(
+        # computed modifier: test[focus](...), test["only"](...) cannot be read statically
+        re.compile(rf"(?<![\w$.]){fn}(?:\.\w+)*\s*\["),
+    )
+
+
+JS_SKIP_MARKER_RES: tuple[re.Pattern[str], ...] = _js_skip_marker_res(JS_TEST_FUNCTIONS)
 
 # tests.discovery_narrowed: pytest config files -> (format, section holding the settings).
 PYTEST_CONFIG_FILES: dict[str, tuple[str, str]] = {
+    "pytest.toml": ("toml", "pytest"),  # pytest >= 9, [pytest] table
+    ".pytest.toml": ("toml", "pytest"),
     "pyproject.toml": ("toml", "tool.pytest.ini_options"),  # also reads native [tool.pytest]
     "pytest.ini": ("ini", "pytest"),
     ".pytest.ini": ("ini", "pytest"),
@@ -350,8 +397,19 @@ JEST_FLAG_OPTIONS: tuple[str, ...] = (
 PYTEST_RUNNERS: frozenset[str] = frozenset({"pytest", "py.test"})
 JS_TEST_RUNNERS: frozenset[str] = frozenset({"jest", "vitest"})
 # jest config objects (package.json "jest", jest.config.json): same semantics as the pytest lists.
-JEST_SELECT_KEYS: tuple[str, ...] = ("testMatch", "testRegex")  # default: everything
-JEST_EXCLUDE_KEYS: dict[str, tuple[str, ...]] = {"testPathIgnorePatterns": ("/node_modules/",)}
+JEST_SELECT_KEYS: dict[str, tuple[str, ...] | None] = {
+    "testMatch": None,  # default: everything
+    "testRegex": None,
+    "roots": ("<rootDir>",),
+    "rootDir": None,
+    "projects": None,
+}
+JEST_EXCLUDE_KEYS: dict[str, tuple[str, ...]] = {
+    "testPathIgnorePatterns": ("/node_modules/",),
+    "modulePathIgnorePatterns": (),
+    "testNamePattern": (),
+    "testPathPattern": (),
+}
 JEST_JSON_CONFIGS: frozenset[str] = frozenset({"jest.config.json"})
 # JS config modules (not parsable without a JS engine): any change inside these keys fires.
 JS_CONFIG_GLOBS: tuple[str, ...] = (
@@ -361,14 +419,55 @@ JS_CONFIG_GLOBS: tuple[str, ...] = (
     "vite.config.*",
 )
 JS_CONFIG_KEYS: tuple[str, ...] = (
+    # jest
     "testMatch",
     "testPathIgnorePatterns",
     "testRegex",
+    "roots",
+    "rootDir",
+    "modulePathIgnorePatterns",
+    "testNamePattern",
+    "testPathPattern",
+    "projects",
+    # vitest (test.include/exclude/dir/root/testNamePattern/workspace)
     "include",
     "exclude",
+    "dir",
+    "root",
+    "workspace",
 )
-MAKEFILE_NAMES: frozenset[str] = frozenset({"makefile", "gnumakefile"})
-MAKEFILE_GLOBS: tuple[str, ...] = ("*.mk",)
+# Files holding shell commands (Makefile recipes, scripts): an added or changed command that
+# narrows a test runner fires.
+MAKEFILE_NAMES: frozenset[str] = frozenset({"makefile", "gnumakefile", "justfile"})
+MAKEFILE_GLOBS: tuple[str, ...] = ("*.mk", "*.sh", "*.bash", "*.zsh")
+# Environment variables that inject options into a runner (`PYTEST_ADDOPTS='-k x' pytest`).
+RUNNER_ENV_RE = re.compile(r"(?<![\w$])(PYTEST_ADDOPTS|JEST_\w+|VITEST_\w*)\s*[:?+]?=")
+# Package managers whose `<pm> [run] <script> [--] args` passes args to the script's runner.
+PACKAGE_MANAGERS: frozenset[str] = frozenset({"npm", "pnpm", "yarn", "bun"})
+# Runner options that take a value (so the value is not read as a positional test path).
+PYTEST_ARG_OPTIONS: frozenset[str] = frozenset(
+    {
+        "-c", "-p", "-o", "-n", "-W", "-r", "--tb", "--rootdir", "--confcutdir", "--basetemp",
+        "--maxfail", "--durations", "--durations-min", "--junitxml", "--junit-xml", "--cov",
+        "--cov-report", "--cov-fail-under", "--cov-config", "--log-level", "--log-file",
+        "--log-cli-level", "--timeout", "--dist", "--numprocesses", "--import-mode",
+        "--capture", "--color", "--override-ini", "--config-file", "--inifile",
+        "--cache-dir", "--deselect", "--ignore", "--ignore-glob", "-k", "-m",
+    }
+)  # fmt: skip
+JS_ARG_OPTIONS: frozenset[str] = frozenset(
+    {
+        "-c", "--config", "-w", "--maxWorkers", "--reporters", "--reporter", "--testTimeout",
+        "--env", "--environment", "--shard", "--outputFile", "--coverageDirectory",
+        "--coverageReporters", "--coverageProvider", "--pool", "--mode", "--project",
+        "--selectProjects", "--rootDir", "--root", "--dir", "--workspace", "-t",
+        "--testNamePattern", "--testPathPattern", "--testPathPatterns",
+        "--testPathIgnorePatterns", "--changedSince", "--seed", "--retry",
+    }
+)  # fmt: skip
+# vitest subcommands: `related` narrows to files, the others are not test paths.
+VITEST_SUBCOMMANDS: frozenset[str] = frozenset({"run", "watch", "dev", "bench", "typecheck"})
+_SHELL_REDIRECT_RE = re.compile(r"^\d*[<>]")
 
 
 # --------------------------------------------------------------------------- catalogue
@@ -572,12 +671,109 @@ def _shown(names: Iterable[str]) -> str:
     return text
 
 
+_DOT_SPACE_RE = re.compile(r"\s*\.\s*")
+
+
 def _code_only(line: str, lang: str) -> str:
-    """The line with string literals blanked and comments removed."""
-    s = _STRING_RE.sub('""', line)
-    if lang == "py":
-        return s.split("#", 1)[0]
-    return _BLOCK_COMMENT_RE.sub("", s).split("//", 1)[0]
+    """The line NFKC-normalised (as Python does for identifiers, so fullwidth `ｓｋｉｐ` is
+    `skip`), with string literals blanked, comments removed and whitespace around `.` dropped
+    (`pytest .mark .skip` is `pytest.mark.skip`)."""
+    s = _STRING_RE.sub('""', unicodedata.normalize("NFKC", line))
+    s = s.split("#", 1)[0] if lang == "py" else _BLOCK_COMMENT_RE.sub("", s).split("//", 1)[0]
+    return _DOT_SPACE_RE.sub(".", s)
+
+
+# ---- name aliases (resolved per file from its BASE content plus its added lines)
+
+_PY_IMPORT_RE = re.compile(r"^\s*import\s+(.+)$")
+_PY_FROM_RE = re.compile(r"^\s*from\s+([\w.]+)\s+import\s+(.+)$")
+_PY_FROM_PAREN_RE = re.compile(r"from\s+([\w.]+)\s+import\s*\(([^)]*)\)", re.S)
+_PY_ASSIGN_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*(?::[^=]*)?=(?!=)\s*([A-Za-z_][\w.]*)")
+_DOTTED_RE = re.compile(r"(?<![\w.])([^\W\d]\w*(?:\.\w+)*)")
+_GETATTR_RE = re.compile(r"\bgetattr\s*\(\s*([^\W\d][\w.]*)")
+_JS_ALIAS_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:const|let|var)\s+([\w$]+)\s*=\s*(?:it|test|describe)\b"),  # const t = test
+    re.compile(r"\b(?:it|test|describe)\s+as\s+([\w$]+)"),  # import { test as t }
+)
+# const { only, skip } = test
+_JS_DESTRUCTURE_RE = re.compile(
+    r"\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*(?:it|test|describe)\b(?!\s*\()"
+)
+
+
+def _resolve_alias(dotted: str, aliases: dict[str, str]) -> str | None:
+    head, _, rest = dotted.partition(".")
+    target = aliases.get(head)
+    if target is None:
+        return None
+    return target + ("." + rest if rest else "")
+
+
+def _from_import(module: str, names: str, aliases: dict[str, str]) -> None:
+    if module.split(".", 1)[0] not in PY_SKIP_MODULES:
+        return
+    for part in names.replace("(", " ").replace(")", " ").split(","):
+        words = part.split()
+        if not words:
+            continue
+        if words[0] == "*":
+            aliases.update({n: f"{module}.{n}" for n in PY_STAR_NAMES})
+        else:
+            aliases[words[-1] if len(words) == 3 and words[1] == "as" else words[0]] = (
+                f"{module}.{words[0]}"
+            )
+
+
+def py_aliases(code_lines: Iterable[str]) -> dict[str, str]:
+    """Names bound to pytest/_pytest/unittest or their attributes -> dotted target. `code_lines`
+    are _code_only lines; the module names themselves are always included."""
+    aliases = {m: m for m in PY_SKIP_MODULES}
+    stmts = [s for ln in code_lines for s in ln.split(";")]
+    for m in _PY_FROM_PAREN_RE.finditer("\n".join(stmts)):
+        _from_import(m.group(1), m.group(2), aliases)
+    for s in stmts:
+        m = _PY_IMPORT_RE.match(s)
+        if m:
+            for part in m.group(1).split(","):
+                words = part.split()
+                if len(words) == 3 and words[1] == "as":
+                    if words[0].split(".", 1)[0] in PY_SKIP_MODULES:
+                        aliases[words[2]] = words[0]
+            continue
+        m = _PY_FROM_RE.match(s)
+        if m:
+            _from_import(m.group(1), m.group(2), aliases)
+    for _ in range(5):  # assignment chains: m = pytest.mark; s = m.skip
+        changed = False
+        for s in stmts:
+            m = _PY_ASSIGN_RE.match(s)
+            if not m:
+                continue
+            target = _resolve_alias(m.group(2), aliases)
+            if target and target.split(".", 1)[0] in PY_SKIP_MODULES:
+                if aliases.get(m.group(1)) != target:
+                    aliases[m.group(1)] = target
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
+def js_aliases(code_lines: Iterable[str]) -> dict[str, str]:
+    """Names bound to it/test/describe -> "test"; a destructured skip/only/todo name maps to
+    "test.<name>"."""
+    aliases = {n: n for n in JS_TEST_FUNCTIONS}
+    for ln in code_lines:
+        for rx in _JS_ALIAS_RES:
+            for m in rx.finditer(ln):
+                aliases[m.group(1)] = "test"
+        for m in _JS_DESTRUCTURE_RE.finditer(ln):
+            for part in m.group(1).split(","):
+                key, _, local = part.partition(":")
+                name = (local or key).strip()
+                if name:
+                    aliases[name] = "test." + key.strip()
+    return aliases
 
 
 def defined_tests(lines: Iterable[str], lang: str) -> Counter[str]:
@@ -585,6 +781,7 @@ def defined_tests(lines: Iterable[str], lang: str) -> Counter[str]:
     out: Counter[str] = Counter()
     for line in lines:
         if lang == "py":
+            line = unicodedata.normalize("NFKC", line)  # Python reads identifiers as NFKC
             for rx in PY_TEST_DEFINITION_RES:
                 m = rx.match(line)
                 if m:
@@ -599,19 +796,120 @@ def defined_tests(lines: Iterable[str], lang: str) -> Counter[str]:
     return out
 
 
-def skip_markers(line: str, lang: str) -> tuple[str, ...]:
-    """Skip, disable or focus markers on one line, as short labels ("pytest.mark.skip")."""
+def skip_markers(line: str, lang: str, aliases: dict[str, str] | None = None) -> tuple[str, ...]:
+    """Skip, disable or focus markers on one line, as short labels ("pytest.mark.skip").
+
+    `aliases` (py_aliases / js_aliases of the file) resolves local names: with
+    `import pytest as pt`, `@pt.mark.skip` is labelled "pytest.mark.skip"."""
     code = _code_only(line, lang)
-    regexes = PY_SKIP_MARKER_RES if lang == "py" else JS_SKIP_MARKER_RES
     labels = []
+    if lang == "py":
+        regexes = PY_SKIP_MARKER_RES
+        names = aliases if aliases is not None else {m: m for m in PY_SKIP_MODULES}
+        for m in _DOTTED_RE.finditer(code):
+            full = _resolve_alias(m.group(1), names)
+            segs = full.split(".") if full else []
+            if segs and segs[0] in PY_SKIP_MODULES and PY_SKIP_ATTRS.intersection(segs[1:]):
+                labels.append(full)
+        for m in _GETATTR_RE.finditer(code):  # getattr(pytest.mark, "skip")
+            full = _resolve_alias(m.group(1), names)
+            if full and full.split(".", 1)[0] in PY_SKIP_MODULES:
+                labels.append(f"getattr {full}")
+    else:
+        names = aliases if aliases is not None else {n: n for n in JS_TEST_FUNCTIONS}
+        regexes = _js_skip_marker_res(tuple(sorted(n for n, t in names.items() if "." not in t)))
+        for m in _DOTTED_RE.finditer(code):  # destructured: const { only } = test; only(...)
+            target = names.get(m.group(1).split(".", 1)[0], "")
+            if target.split(".")[1:2] and target.split(".")[1].startswith(("skip", "only", "todo")):
+                labels.append(target)
     for rx in regexes:
         for m in rx.finditer(code):
-            labels.append(re.sub(r"[\s@(]", "", m.group(0)).rstrip("."))
-    return tuple(labels)
+            label = re.sub(r"[\s@(=]", "", m.group(0)).rstrip(".")
+            if label.endswith("["):
+                label = label[:-1] + " computed modifier"
+            if not any(other.endswith("." + label) for other in labels):
+                labels.append(label)
+    return tuple(dict.fromkeys(_safe(lb, 40) for lb in labels))
 
 
 def _marker_key(line: str, lang: str) -> str:
     return " ".join(_code_only(line, lang).split())
+
+
+# ---- pytest collection (BASE config of the scope a path belongs to)
+
+# pytest's config files in its precedence order within one directory; the first four apply even
+# without a pytest section.
+PYTEST_CONFIG_ORDER: tuple[str, ...] = (
+    "pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini", "pyproject.toml", "tox.ini",
+    "setup.cfg",
+)  # fmt: skip
+PYTEST_DEDICATED_CONFIGS: frozenset[str] = frozenset(PYTEST_CONFIG_ORDER[:4])
+
+
+class _Collection:
+    """Whether pytest (or jest, by name) collects a path, from the BASE pytest config of the
+    nearest ancestor directory that has one (testpaths, norecursedirs, python_files)."""
+
+    def __init__(self, ctx: _Ctx):
+        self.ctx = ctx
+        self._configs: dict[str, tuple[str, dict[str, Any]]] = {}
+
+    def _config(self, directory: str) -> tuple[str, dict[str, Any]]:
+        """(config directory "a/b/" or "", settings) for `directory` ("" is the root)."""
+        if directory in self._configs:
+            return self._configs[directory]
+        found: tuple[str, dict[str, Any]] | None = None
+        prefix = directory + "/" if directory else ""
+        for name in PYTEST_CONFIG_ORDER:
+            try:
+                raw = _read_base(self.ctx, prefix + name)
+            except (GitError, OSError):
+                raw = None
+            if raw is None:
+                continue
+            try:
+                section = _pytest_section(name, raw)
+            except (ValueError, UnicodeDecodeError, configparser.Error):
+                section = {} if name in PYTEST_DEDICATED_CONFIGS else None
+            if section is not None or name in PYTEST_DEDICATED_CONFIGS:
+                found = (prefix, section or {})
+                break
+        if found is None:
+            found = self._config(posixpath.dirname(directory)) if directory else ("", {})
+        self._configs[directory] = found
+        return found
+
+    def collected(self, path: str) -> bool:
+        if _parts(path)[3] != ".py":
+            return _is_collected(path)
+        cfg_dir, settings = self._config(posixpath.dirname(path))
+        segs = path[len(cfg_dir) :].lower().split("/")
+        dirs, name = segs[:-1], segs[-1]
+        testpaths = _as_list(settings.get("testpaths"), words=True)
+        if testpaths:
+            for t in testpaths:
+                norm = posixpath.normpath(t.lower())
+                tsegs = [] if norm == "." else norm.split("/")
+                if len(tsegs) > len(segs) or not all(
+                    fnmatch.fnmatchcase(s, p) for s, p in zip(segs, tsegs, strict=False)
+                ):
+                    continue
+                if len(tsegs) == len(segs):
+                    return True  # named explicitly: collected whatever its name
+                dirs = dirs[len(tsegs) :]
+                break
+            else:
+                return False  # outside every testpath
+        norecurse = _as_list(settings.get("norecursedirs"), words=True)
+        if norecurse is None:
+            norecurse = list(PYTEST_EXCLUDE_KEYS["norecursedirs"])
+        if any(fnmatch.fnmatchcase(d, p.lower()) for d in dirs for p in norecurse):
+            return False
+        files = _as_list(settings.get("python_files"), words=True)
+        if files is None:
+            files = list(PYTEST_SELECT_KEYS["python_files"] or ())
+        return any(fnmatch.fnmatchcase(name, g.lower()) for g in files)
 
 
 def _rename_note(f: ChangedFile) -> str:
@@ -629,12 +927,15 @@ def _tests_deleted(change: ChangeSet, ctx: _Ctx) -> dict[str, str]:
     removed: dict[str, Counter[str]] = {}
     pool: Counter[str] = Counter()  # definitions added (net) anywhere in the change set
     notes: dict[str, str] = {}
+    coll = _Collection(ctx)
     for f in change.files:
         new_lang = _test_lang(f.path) if f.status is not FileStatus.DELETED else None
         old_path = f.old_path or f.path
         old_lang = _test_lang(old_path)
         renamed_away = (
-            f.status is FileStatus.RENAMED and _is_collected(old_path) and not _is_collected(f.path)
+            f.status is FileStatus.RENAMED
+            and coll.collected(old_path)
+            and not coll.collected(f.path)
         )
         gone = f.status is FileStatus.DELETED or renamed_away
         if gone and _is_collected(old_path) and old_lang is None:
@@ -661,7 +962,10 @@ def _tests_deleted(change: ChangeSet, ctx: _Ctx) -> dict[str, str]:
         gained = defined_tests(f.added, lang) if new_lang else Counter()
         lost = defined_tests(f.removed, lang)
         removed[f.path] = lost - gained
-        pool.update(gained - lost)
+        if new_lang and coll.collected(f.path):
+            # only a destination the runner collects makes a move (helpers.py, build/ or a
+            # path outside testpaths would hide the test)
+            pool.update(gained - lost)
     for path in sorted(removed):
         missing = []
         for name in sorted(removed[path].elements()):
@@ -676,12 +980,25 @@ def _tests_deleted(change: ChangeSet, ctx: _Ctx) -> dict[str, str]:
     return notes
 
 
-def _tests_skip_added(change: ChangeSet, _ctx: _Ctx) -> dict[str, str]:
+def _file_aliases(f: ChangedFile, ctx: _Ctx, lang: str) -> dict[str, str]:
+    """Local names of pytest/unittest (Python) or it/test/describe (JS) in `f`: from its BASE
+    content plus its added lines (a superset: fail closed)."""
+    try:
+        raw = _read_base(ctx, f.old_path or f.path)
+    except (GitError, OSError):
+        raw = None
+    lines = [_code_only(ln, lang) for ln in [*_decode_lines(raw), *f.added]]
+    return py_aliases(lines) if lang == "py" else js_aliases(lines)
+
+
+def _tests_skip_added(change: ChangeSet, ctx: _Ctx) -> dict[str, str]:
     pool: Counter[str] = Counter()  # marker lines removed anywhere (a moved marker is not new)
+    aliases: dict[str, dict[str, str]] = {}
     for f in change.files:
         lang = _test_lang(f.old_path or f.path) or _test_lang(f.path)
         if lang:
-            pool.update(_marker_key(ln, lang) for ln in f.removed if skip_markers(ln, lang))
+            aliases[f.path] = names = _file_aliases(f, ctx, lang)
+            pool.update(_marker_key(ln, lang) for ln in f.removed if skip_markers(ln, lang, names))
     notes: dict[str, str] = {}
     for f in change.files:
         lang = _test_lang(f.path)
@@ -694,8 +1011,9 @@ def _tests_skip_added(change: ChangeSet, _ctx: _Ctx) -> dict[str, str]:
             )
             continue
         labels: list[str] = []
+        names = aliases.get(f.path) or _file_aliases(f, ctx, lang)
         for ln in f.added:
-            found = skip_markers(ln, lang)
+            found = skip_markers(ln, lang, names)
             if not found:
                 continue
             key = _marker_key(ln, lang)
@@ -740,25 +1058,102 @@ def _command_options(
 
 
 _COMMAND_SPLIT_RE = re.compile(r"&&|\|\||[;|\n]")
+# Label for a positional argument (a test file, directory or jest path pattern).
+POSITIONAL = "test-path"
+# Words before a runner name that mean it is being installed, not run (`pip install pytest`).
+_INSTALL_WORDS = frozenset({"install", "add", "i", "uninstall", "remove", "rm"})
+# Package-manager commands that are not scripts (`yarn add x`, `pnpm install`).
+_PM_COMMANDS = frozenset(
+    {
+        "install", "i", "ci", "add", "remove", "rm", "uninstall", "exec", "dlx", "x", "why",
+        "audit", "outdated", "update", "upgrade", "up", "link", "publish", "pack", "init",
+        "create", "config", "cache", "list", "ls", "info", "view", "set", "version",
+    }
+)  # fmt: skip
+
+
+def _positionals(words: list[str], arg_opts: frozenset[str], js: bool) -> list[tuple[str, str]]:
+    """Positional arguments (test paths or path patterns) among a runner's argument words."""
+    out: list[tuple[str, str]] = []
+    skip_next = False
+    for idx, w in enumerate(words):
+        if skip_next:
+            skip_next = False
+            continue
+        if _SHELL_REDIRECT_RE.match(w):
+            skip_next = re.fullmatch(r"\d*(?:>>?|<)&?", w) is not None  # `> out.txt`
+            continue
+        if w.startswith("-"):
+            skip_next = "=" not in w and w in arg_opts
+            continue
+        if js and idx == 0 and w in VITEST_SUBCOMMANDS:
+            continue
+        out.append((POSITIONAL, w))
+    return out
+
+
+def _runner_args(words: list[str], kind: str) -> list[tuple[str, str]]:
+    """Narrowing options and positional test paths in a runner's argument words."""
+    if kind == "pytest":
+        found = _command_options(words, PYTEST_VALUE_OPTIONS, PYTEST_FLAG_OPTIONS)
+        return found + _positionals(words, PYTEST_ARG_OPTIONS, js=False)
+    found = _command_options(words, JEST_VALUE_OPTIONS, JEST_FLAG_OPTIONS)
+    return found + _positionals(words, JS_ARG_OPTIONS, js=True)
+
+
+def _passthrough_args(pm: str, rest: list[str]) -> list[tuple[str, str]] | None:
+    """Narrowing arguments passed through `<pm> [run] <script> [--] ...` to the script's runner
+    (which may be jest, vitest or pytest: both option sets count). None: not a script run."""
+    if not rest:
+        return None
+    if rest[0] in ("run", "run-script") and len(rest) > 1:
+        script, args = rest[1], rest[2:]
+    elif rest[0] in ("test", "t", "tst"):
+        script, args = "test", rest[1:]
+    elif pm != "npm" and not rest[0].startswith("-") and rest[0] not in _PM_COMMANDS:
+        script, args = rest[0], rest[1:]
+    else:
+        return None
+    if "--" in args:
+        args = args[args.index("--") + 1 :]
+    elif pm == "npm":
+        return []  # npm keeps options before `--` for itself
+    value_opts = JEST_VALUE_OPTIONS + PYTEST_VALUE_OPTIONS
+    flag_opts = JEST_FLAG_OPTIONS + PYTEST_FLAG_OPTIONS
+    out = _command_options(args, value_opts, flag_opts)
+    if any(k in script.lower() for k in ("test", "spec", "e2e")):
+        out += _positionals(args, JS_ARG_OPTIONS | PYTEST_ARG_OPTIONS, js=True)
+    return out
 
 
 def command_narrowing(text: str) -> Counter[tuple[str, str]]:
-    """Narrowing options given to pytest or jest/vitest in a shell command line."""
+    """Narrowing given to pytest or jest/vitest in shell command lines: runner options
+    (-k, -t, --ignore, ...), positional test paths, runner environment variables
+    (PYTEST_ADDOPTS=, JEST_*, VITEST_*) and arguments passed through a package manager script
+    (`npm test -- -t x`)."""
     out: Counter[tuple[str, str]] = Counter()
     for cmd in _COMMAND_SPLIT_RE.split(text):
+        for m in RUNNER_ENV_RE.finditer(cmd):
+            out[(m.group(1) + "=", " ".join(cmd.split()))] += 1
         try:
             words = shlex.split(cmd)
         except ValueError:
             words = cmd.split()
         for i, w in enumerate(words):
+            if w in _INSTALL_WORDS:
+                break  # installing the runner, not running it
             runner = posixpath.basename(w.lstrip("@-+"))
             if runner in PYTEST_RUNNERS:
-                out.update(
-                    _command_options(words[i + 1 :], PYTEST_VALUE_OPTIONS, PYTEST_FLAG_OPTIONS)
-                )
+                out.update(_runner_args(words[i + 1 :], "pytest"))
                 break
             if runner in JS_TEST_RUNNERS:
-                out.update(_command_options(words[i + 1 :], JEST_VALUE_OPTIONS, JEST_FLAG_OPTIONS))
+                out.update(_runner_args(words[i + 1 :], "js"))
+                break
+            passed = (
+                _passthrough_args(runner, words[i + 1 :]) if runner in PACKAGE_MANAGERS else None
+            )
+            if passed is not None:
+                out.update(passed)
                 break
     return out
 
@@ -777,16 +1172,20 @@ def _as_list(value: Any, *, words: bool = False) -> list[str] | None:
     return text.split()
 
 
-def _pytest_settings(name: str, raw: bytes) -> dict[str, Any]:
-    """The pytest settings in a config file ({} when it has no pytest section). Raises on a parse
-    error (ValueError, UnicodeDecodeError, tomllib.TOMLDecodeError, configparser.Error)."""
+def _pytest_section(name: str, raw: bytes) -> dict[str, Any] | None:
+    """The pytest settings in a config file (None when it has no pytest section). Raises on a
+    parse error (ValueError, UnicodeDecodeError, tomllib.TOMLDecodeError, configparser.Error)."""
     fmt, section = PYTEST_CONFIG_FILES[name]
     text = raw.decode("utf-8")
     if fmt == "toml":
-        tool = tomllib.loads(text).get("tool", {})
-        pytest_table = tool.get("pytest", {}) if isinstance(tool, dict) else {}
+        data = tomllib.loads(text)
+        if section == "pytest":  # pytest.toml / .pytest.toml: a [pytest] table
+            table = data.get("pytest")
+            return table if isinstance(table, dict) else None
+        tool = data.get("tool", {})
+        pytest_table = tool.get("pytest") if isinstance(tool, dict) else None
         if not isinstance(pytest_table, dict):
-            return {}
+            return None
         merged = {k: v for k, v in pytest_table.items() if k != "ini_options"}
         ini = pytest_table.get("ini_options", {})
         if isinstance(ini, dict):
@@ -794,7 +1193,13 @@ def _pytest_settings(name: str, raw: bytes) -> dict[str, Any]:
         return merged
     parser = configparser.ConfigParser(interpolation=None, strict=False)
     parser.read_string(text)
-    return dict(parser[section]) if parser.has_section(section) else {}
+    return dict(parser[section]) if parser.has_section(section) else None
+
+
+def _pytest_settings(name: str, raw: bytes) -> dict[str, Any]:
+    """The pytest settings in a config file ({} when it has no pytest section); raises like
+    _pytest_section."""
+    return _pytest_section(name, raw) or {}
 
 
 def _selection_narrowed(old: list[str] | None, new: list[str] | None, default) -> bool:
@@ -826,9 +1231,8 @@ def pytest_narrowing(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
             out.append(f"extends {key}")
     words_old = _as_list(old.get("addopts"), words=True) or []
     words_new = _as_list(new.get("addopts"), words=True) or []
-    gained = Counter(
-        _command_options(words_new, PYTEST_VALUE_OPTIONS, PYTEST_FLAG_OPTIONS)
-    ) - Counter(_command_options(words_old, PYTEST_VALUE_OPTIONS, PYTEST_FLAG_OPTIONS))
+    # a positional path in addopts replaces testpaths
+    gained = Counter(_runner_args(words_new, "pytest")) - Counter(_runner_args(words_old, "pytest"))
     if gained:
         out.append(f"adds {_options_text(gained)} to addopts")
     return out
@@ -839,8 +1243,8 @@ def jest_narrowing(old: Any, new: Any) -> list[str]:
     old = old if isinstance(old, dict) else {}
     new = new if isinstance(new, dict) else {}
     out = []
-    for key in JEST_SELECT_KEYS:
-        if _selection_narrowed(_as_list(old.get(key)), _as_list(new.get(key)), None):
+    for key, select_default in JEST_SELECT_KEYS.items():
+        if _selection_narrowed(_as_list(old.get(key)), _as_list(new.get(key)), select_default):
             out.append(f"narrows jest {key}")
     for key, default in JEST_EXCLUDE_KEYS.items():
         if _exclusion_narrowed(_as_list(old.get(key)), _as_list(new.get(key)), default):
@@ -891,6 +1295,27 @@ def _decode_lines(raw: bytes | None) -> list[str]:
     return raw.decode("utf-8", "replace").splitlines() if raw is not None else []
 
 
+def _logical_lines(raw: bytes | None) -> str:
+    """Shell/Makefile text with backslash continuations joined (one command per line)."""
+    return re.sub(r"\\\r?\n", " ", raw.decode("utf-8", "replace")) if raw is not None else ""
+
+
+def _script_content_narrowing(f: ChangedFile, ctx: _Ctx) -> Counter[tuple[str, str]]:
+    """Narrowing in the working-tree commands of a Makefile or script that BASE lacks (so a
+    command split over continuation lines is read whole). Unreadable sides count as empty;
+    the diff lines are compared as well."""
+    try:
+        after = git.read_worktree(ctx.repo, f.path) if f.status is not FileStatus.DELETED else None
+        before = _read_base(ctx, f.old_path or f.path) if f.status is not FileStatus.ADDED else None
+    except (GitError, OSError):
+        return Counter()
+    old = Counter(" ".join(ln.split()) for ln in _logical_lines(before).splitlines())
+    new = Counter(" ".join(ln.split()) for ln in _logical_lines(after).splitlines())
+    return command_narrowing("\n".join((new - old).elements())) - command_narrowing(
+        "\n".join((old - new).elements())
+    )
+
+
 def _discovery_file(f: ChangedFile, ctx: _Ctx) -> str | None:
     """Why `f` narrows test discovery, or None."""
     _dirs, name, _stem, _ext = _parts(f.path)
@@ -908,6 +1333,7 @@ def _discovery_file(f: ChangedFile, ctx: _Ctx) -> str | None:
             gained = command_narrowing("\n".join(added.elements())) - command_narrowing(
                 "\n".join(lost.elements())
             )
+            gained |= _script_content_narrowing(f, ctx)
             return f"adds {_options_text(gained)} to a test command" if gained else None
         try:
             after = (
