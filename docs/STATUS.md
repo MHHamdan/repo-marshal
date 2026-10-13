@@ -4,21 +4,26 @@ _Last updated: 2026-10-13_
 
 ## Current phase
 
-**Phase 1 — Research** (MISSION.md §62). No implementation scaffolding yet.
+**Phase 1 (Research, MISSION.md §62) is complete.** Phase 2 (Product Definition, §63) is next.
+No implementation scaffolding exists yet.
 
-Done in this phase:
-- Read MISSION.md and CLAUDE.md.
-- Cloned every upstream repo named in MISSION.md §4–§6 read-only into the session
-  scratchpad (blobless clones; Playwright sparse) and recorded HEAD SHAs (below).
-- Started deep per-repo research (README, licenses, CLI, schemas, tests, tags) and
-  a web search for additional prior art and name collisions.
+Phase 1 deliverables:
+- `docs/research/ecosystem-comparison.md`: the comparison matrix, the lessons learned, a revised
+  native-vs-provider table, and the name check.
+- `docs/research/gap-analysis.md`: answers to Q1–Q6, the unique value proposition, the premise
+  challenges, and the decision.
+- `docs/UPSTREAM_PROVENANCE.md`: SHA, license per component, integration method and obligations for
+  every upstream.
+- `docs/research/notes/`: raw evidence notes with `path:line` citations.
 
 ## Next step
 
-Write `docs/research/ecosystem-comparison.md`, `docs/research/gap-analysis.md`
-and `docs/UPSTREAM_PROVENANCE.md` from the research notes, then commit. If resuming
-locally without the notes (they lived in the cloud scratchpad), re-clone the repos
-at the SHAs below and re-run the per-repo method in MISSION.md §61.
+Write `docs/product-definition.md` (MISSION.md §63). It needs these headings: product category,
+primary user, trigger, input, decision, output, value, non-goals.
+
+Take the positioning from the "Decision" section of `docs/research/gap-analysis.md`: a local-first
+change-plan compiler plus completion evaluator, not a harness. Then do Phase 3: `docs/architecture.md`
+and ADRs 001–005.
 
 ## Upstream repos inspected
 
@@ -37,6 +42,7 @@ at the SHAs below and re-run the per-repo method in MISSION.md §61.
 | giugiu-a11y/doneproof | 4a45ebc01fb41c33130657e8addd15f4c9bcc4d4 | 2026-08-23T01:37:33-03:00 |
 | modelcontextprotocol/modelcontextprotocol | 3778656b2e0ba6725035e816fe3085374cbaa736 | 2026-10-12T09:26:31-07:00 |
 | microsoft/playwright | a3401cfe0dcf317101572d025fa46248d0779b42 | 2026-10-12T16:44:45-07:00 |
+| preloop/preloop (discovered) | 71dd091e8e6e7503a8105b3b18b772df9707e15c (feature merge c762ff2a) | 2026-10-13T03:13:37+02:00 |
 
 ## Open questions / blockers
 
@@ -52,5 +58,20 @@ at the SHAs below and re-run the per-repo method in MISSION.md §61.
 
 - Work branch `claude/phase1-research` (session started on `main`; CLAUDE.md
   forbids working directly on the default branch).
-- Name check: `repomarshal` is unclaimed on PyPI and npm (both returned 404 on
-  2026-10-13). A wider collision search is still in progress.
+- **Keep the name RepoMarshal.** It is unclaimed on PyPI, npm, crates.io and GitHub. Avoid a bare
+  `marshal` CLI, package or import: chiruu12/marshal, crates.io `marshal` and the Python standard
+  library all use it.
+- **Diff-driven check selection is not novel.** Preloop PR #435 already does it with path globs. We
+  claim the combination: inferred gate inventory, content signals, reasons for skipped gates, one
+  plan from before the work to the verdict, and a typed five-state verdict.
+- **Policy is loaded from the BASE commit.** Edits to the policy, CI or agent config are high-risk
+  signals, so an agent cannot relax its own requirements.
+- **Only gates RepoMarshal itself ran count as evidence.** Agent-reported results are claims.
+- **Minimise only expensive gates.** Cheap gates always run, and uncovered files get a conservative
+  default. CI stays authoritative. This answers AgentSmith rule R5.
+- **No generation of agent-specific config.** The agent-facing interface is MCP stdio plus the CLI.
+  Hook shims start with Claude Code `Stop`.
+- **v0.1 real adapters:** SkillSpector (security) and Playwright (runtime). Reticle, Chisel, UI Skills,
+  UI/UX Pro Max and AgentProof are PLANNED, with no stubs.
+- **Open:** the RepoMarshal license. Apache-2.0 is proposed, to stay compatible with Apache-2.0 prior
+  art; decide in Phase 2.
