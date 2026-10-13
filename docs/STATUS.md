@@ -4,30 +4,27 @@ _Last updated: 2026-10-13_
 
 ## Current phase
 
-**Phase 1 (Research) is complete. Phase 2 (Product Definition, MISSION.md §63) is complete.**
-Phase 3 (Architecture, §64) is next. No implementation code exists yet.
+**Phase 3 (Architecture, MISSION.md §64) is in progress.** The owner asked for Phases 3, 4 and 5
+together, then the start of Phase 6. Phases 1–2 are complete: see `docs/research/`,
+`docs/product-definition.md` and `LICENSE` (Apache-2.0).
 
-Phase 1 deliverables:
-- `docs/research/ecosystem-comparison.md`
-- `docs/research/gap-analysis.md`
-- `docs/UPSTREAM_PROVENANCE.md`
-- `docs/research/notes/`
-
-Phase 2 deliverables:
-- `docs/product-definition.md`: category, user, triggers, inputs, decisions, outputs and the verdict
-  table with exit codes, value, non-goals, and the v0.1 command set.
-- `LICENSE`: Apache-2.0.
+Done in Phase 3:
+- `docs/adr/001-core-language.md`: Python ≥ 3.11, stdlib-only core, TOML config. Based on measured
+  cold starts: about 60 ms for stdlib, 190 ms with typer + pydantic, against a 300 ms budget.
 
 ## Next step
 
-Phase 3: write `docs/architecture.md` and ADRs 001–005 (`docs/adr/`). Cover the component diagram
-(Mermaid), data flow, the Change Plan IR entities, providers, the planning algorithm, persistence
-under `.repomarshal/`, evidence flow, failure semantics, caching keys, the privacy and security
-boundaries, and the MCP surface.
+Write `docs/architecture.md`, at most about 400 lines. Mermaid only for the components and the data
+flow. It must include worked examples of:
+1. gate inventory on an unconfigured repo (package.json, pyproject, Makefile, CI hints, AGENTS.md;
+   cheap/standard/expensive cost classes, and measured durations that can only *promote* a gate);
+2. the deterministic planning pseudo-code, walking the auth fixture diff end to end;
+3. the tree digest for uncommitted work (temporary index + `git add -A` + `write-tree`, excluding
+   `.repomarshal/`);
+4. tamper resistance of `.repomarshal/`.
 
-ADR-001 must choose the core language. Python is the likely choice: the SkillSpector and AgentProof
-ecosystems, and the MCP Python SDK. Weigh it honestly against Go and TypeScript, mainly on startup
-latency and distribution.
+After that: ADRs 002–005, `docs/security/threat-model.md`, `docs/roadmap.md`, then the Phase 6 slice
+(`plan` and `done` on a fixture repo, with tests).
 
 ## Upstream repos inspected
 
