@@ -39,21 +39,10 @@ flowchart LR
   PLAN --> VER
 ```
 
-Python modules (stdlib only; see ADR-001). Each module has one job:
-
-| Module | Responsibility |
-|---|---|
-| `git.py` | BASE resolution, changed files, per-file added and removed lines, tree digest, reading files at a revision |
-| `inventory.py` | Gate inventory from manifests and config |
-| `signals.py` | Signal catalogue (data) and its evaluation |
-| `planner.py` | Gate decisions, context and skill selection, plan assembly |
-| `policy.py` | Load and validate `repomarshal.toml` from BASE |
-| `runner.py` | Execute gates (argv, timeout, output capture, redaction) |
-| `evidence.py` | Evidence records and digests |
-| `verdict.py` | Fold gate results into a verdict |
-| `model.py` | IR dataclasses and `to_dict()` |
-| `render.py` | Human output |
-| `cli.py` | The `plan` / `done` commands, `--json`, exit codes |
+Python modules (stdlib only; see ADR-001): `git.py` (BASE, changed files, line diffs, tree
+digest), `inventory.py`, `signals.py` (catalogue as data), `planner.py` (decisions, context,
+skills), `policy.py` (TOML from BASE), `runner.py` (argv execution, timeouts, redaction),
+`evidence.py`, `verdict.py`, `model.py` (IR dataclasses), `render.py` and `cli.py`.
 
 `plan` never executes repository code. It only reads files and runs `git`, so it is safe on
 untrusted repositories. `done` executes the repository's own commands, so it carries the same
@@ -114,24 +103,15 @@ is **UNAVAILABLE** and the reason names the missing tool.
 
 ### 3.3 Cost classes
 
-Each kind has a default cost class:
+Default cost by kind:
+- **cheap:** docs, format, lint, secrets;
+- **standard:** typecheck, unit, build;
+- **expensive:** integration, runtime, a11y, dep_audit, security_scan, skill_audit.
 
-| Cost | Kinds |
-|---|---|
-| cheap | docs, format, lint, secrets |
-| standard | typecheck, unit, build |
-| expensive | integration, runtime, a11y, dep_audit, security_scan, skill_audit |
-
-**Cost never decides safety.** The decision rules in §4 decide which gates are required. Cost only
-affects:
-1. **Ordering.** Cheap gates run first, and execution stops at the first FAIL only when
-   `--fail-fast` is passed.
-2. **Promotion (later).** Measured durations live in `.repomarshal/state/durations.json` as a
-   rolling median per gate id. A gate in an expensive kind whose median is under 10 s is promoted to
-   "run whenever its scope changed".
-
-Measurements can only *promote*, never demote. Forging the durations file, which an agent can do
-(§7), can therefore only add work.
+**Cost never decides safety.** The §4 rules decide what is required. Cost only affects run order
+(cheap first; `--fail-fast` is opt-in) and, later, *promotion*. Measured medians in
+`.repomarshal/state/durations.json` can make a gate under 10 s run whenever its scope changed.
+Measurements can only promote, never demote, so a forged durations file can only add work.
 
 ### 3.4 Worked example: the `webapp` fixture with no `repomarshal.toml`
 
@@ -287,12 +267,9 @@ The diff, uncommitted: `backend/app/auth/refresh.py` is modified, and the added 
    smoke script) to `repomarshal.toml` on main turns those gates into REQUIRED commands, and the
    verdict can then be PASS.
 
-For contrast:
-- **Scenario A** (`docs/install.md` edited): only `docs.changed` fires. `native:docs-links` is
-  REQUIRED. Every code gate is SKIPPED, with "no changed files under …" or "no code.changed signal".
-- **Scenario B** (`LoginForm.tsx`, `login.css`): `frontend.ui` and `code.changed` in `frontend/`.
-  Frontend lint, typecheck, unit, runtime and a11y are REQUIRED. Backend gates are SKIPPED.
-  integration and security_scan are not needed.
+For contrast, Scenario A (`docs/install.md`) requires only `native:docs-links`. Scenario B
+(`LoginForm.tsx`, `login.css`) requires frontend lint, typecheck, unit, runtime and a11y, and skips
+every backend gate.
 
 ### 4.4 Context selection (deterministic heuristic, labelled as such)
 
@@ -339,15 +316,11 @@ tree_digest = GIT_INDEX_FILE=tmp git write-tree   # a git tree id over the exact
 remove tmp
 ```
 
-- **Coverage:** content, exec bits and symlink targets of every tracked and untracked file that
-  `.gitignore` does not ignore.
-- **Exclusion:** `.repomarshal/` is always excluded, so writing evidence never invalidates its own
-  evidence.
-- **Side effect:** blobs are written to the object database as loose objects, which is harmless and
-  removed by `git gc`. The user's index and refs are untouched.
-- **Limitations, documented:**
-  - Ignored files (build outputs, `.env`) are not covered.
-  - Dirty submodule content is covered only as the recorded gitlink.
+This covers the content, exec bits and symlink targets of every non-ignored file.
+`.repomarshal/` is excluded, so writing evidence never invalidates itself. The blobs it writes are
+harmless loose objects that `git gc` removes, and the user's index and refs are untouched.
+Limitations: ignored files (build outputs, `.env`) are not covered, and a dirty submodule is covered
+only as its recorded gitlink.
 
 ### 5.2 What a verdict is bound to
 
@@ -446,38 +419,15 @@ does not edit agent configuration.
 
 ## 10. Privacy and security boundary
 
-- **No network.** No telemetry. `plan` and `done` never open sockets themselves.
-- **Gate commands may use the network.** That is the repository's own behaviour, and `--dry-run`
-  lists the commands before anything runs.
-- **Providers that egress by default** (SkillSpector's OSV lookups, Reticle telemetry) are invoked
-  with their opt-outs, and the egress is labelled in `doctor` (later).
-- **Not a sandbox.** RepoMarshal is not a sandbox and does not enforce tool permissions. It decides,
-  runs and reports.
+RepoMarshal opens no sockets and sends no telemetry. Gate commands may use the network, because that
+is the repository's own behaviour, and `--dry-run` lists them first. Providers that egress by
+default (SkillSpector's OSV lookups, Reticle telemetry) are run with their opt-outs. RepoMarshal is
+not a sandbox and enforces no tool permissions.
 
-## 11. MCP and agent interoperability (v0.1 SHOULD; ADR-003)
+## 11. Agent interoperability and caching
 
-- **Server:** `repomarshal mcp` is a stdio server targeting MCP 2026-07-28 (stateless), with fallback
-  to 2025-11-25.
-- **Tools.** Every tool takes an explicit `repo_path`, because Roots is deprecated:
-  - `repomarshal_plan(repo_path, task?, base?)`: `readOnlyHint: true`, `openWorldHint: false`.
-    Returns the plan as `structuredContent` with a published `outputSchema`.
-  - `repomarshal_done(repo_path)`: not read-only (it runs repository commands). Returns the verdict
-    and evidence path.
-  - `repomarshal_explain(repo_path, plan_hash, gate_id)`: the reasons for one gate.
-- **Host integration:**
-  - Claude Code: a `Stop` hook snippet runs `repomarshal done --hook claude-code`. A non-zero verdict
-    blocks the stop, with the failing and unknown gates as feedback.
-  - Other hosts: snippets are printed by `repomarshal init --print <host>`. RepoMarshal never writes
-    host config files.
+Agent interoperability (MCP stdio tools with an explicit `repo_path`, and host stop-hook shims) is
+decided in [ADR-003](adr/003-agent-interoperability.md).
 
-## 12. Caching (later)
-
-- **v0.1 has no cache:** correctness first, see §7.
-- **First cache:**
-  - Key: `sha256(gate.argv, gate.cwd, scope_tree_id, root_config_digest, tool_version, env_fingerprint)`.
-    `scope_tree_id` is `git rev-parse <tree_digest>:<scope>`, which comes free from §5.1.
-  - Value: authenticated with an HMAC key stored outside the repository
-    (`~/.local/state/repomarshal/key`).
-  - Security and runtime gates are never cached.
-  - Forging a cache entry would mean deliberately reading that key, which raises the bar but is not
-    a boundary (threat model T3).
+Result caching is deferred: v0.1 always re-executes (§7). The planned cache key and its limits are
+in [ADR-004](adr/004-evidence-model.md).
