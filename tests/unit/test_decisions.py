@@ -223,6 +223,22 @@ def test_scenario_b_frontend_only():
     assert "frontend.ui" in {r.signal for r in g["frontend:a11y"].reasons}
 
 
+def test_rename_out_of_a_scope_requires_the_source_scope_gates():
+    moved = ChangedFile(
+        "frontend/src/routes.py", FileStatus.RENAMED, old_path="backend/app/api/routes.py"
+    )
+    _signals, decisions = plan(change(moved))
+    req = required(decisions)
+    assert {"backend:lint", "backend:typecheck", "backend:unit"} <= req
+    assert {"frontend:lint", "frontend:typecheck", "frontend:unit"} <= req
+
+
+def test_truncated_code_file_requires_secrets_gate():
+    big = ChangedFile("backend/app/big.py", FileStatus.ADDED, added=("x = 1",), truncated=True)
+    _signals, decisions = plan(change(big))
+    assert by_gate(decisions)["native:secrets-diff"].status is REQ
+
+
 # --------------------------------------------------------------------------- widening
 
 

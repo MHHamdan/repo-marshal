@@ -9,12 +9,21 @@ matching files (files sorted). A file that matches no rule (built-in or custom) 
 coverage.unclassified. Deleted files count (their path still matters).
 
 Matching notes (the exact pattern sets are the constants below):
-- Path matching is case-insensitive and uses POSIX paths. For a rename, both the new and the old
-  path are matched (moving a file out of `auth/` still touches auth code); the signal lists the
-  new path.
+- Path matching is case-insensitive and uses POSIX paths. For a rename, every path rule (and
+  coverage.unclassified) is evaluated against both the new and the old path: moving a file out of
+  `auth/` or `backend/` still touches that code. A signal that fires for a renamed file lists both
+  paths, so gate relevance (decisions) sees the source scope too. coverage.unclassified fires
+  when either path matches no rule.
+- docs.changed covers documentation file types only: doc extensions (.md .markdown .rst .adoc),
+  .txt or extensionless files with a well-known doc stem (README, LICENSE, CHANGELOG, ...), and
+  doc formats (those, any .txt, and images) under a `docs`/`doc` segment. Any other file under
+  `docs/` (`docs/messages.json`, `docs/conf.py`) goes through the other rules. `.mdx` compiles to
+  components: it is docs.changed, code.changed and frontend.ui.
 - "Segment" means a directory component of the path (not the file name). "Stem" means the file
   name without its final extension, compared exactly (`LoginForm.tsx` has stem `loginform`, which
   is not `login`).
+- security.sensitive_identifier fails closed: a non-test code file whose added lines are not
+  fully visible (binary or truncated) fires it, so the secrets gate is required.
 - security.auth_path ignores documentation, stylesheet and static-asset files (`login.css`,
   `docs/security/threat-model.md`): they cannot change auth behaviour, and every changed file
   still gets some signal, so this can never shrink a plan to nothing.
@@ -64,12 +73,22 @@ WIDENING: frozenset[str] = frozenset(
 # --------------------------------------------------------------------------- pattern data
 
 # docs.changed: documentation extensions anywhere, plain-text or extensionless files whose stem is
-# a well-known doc name, and anything with a `docs`/`doc` directory segment.
-DOC_EXTENSIONS: frozenset[str] = frozenset({".md", ".markdown", ".mdx", ".rst", ".adoc"})
+# a well-known doc name, and documentation formats (incl. images) under a `docs`/`doc` segment.
+DOC_EXTENSIONS: frozenset[str] = frozenset({".md", ".markdown", ".rst", ".adoc"})
+# Compiled to components (MDX): docs, but also code and UI.
+COMPILED_DOC_EXTENSIONS: frozenset[str] = frozenset({".mdx"})
 DOC_TEXT_STEMS: frozenset[str] = frozenset(
-    {"readme", "changelog", "changes", "history", "license", "notice", "authors", "contributing"}
-)
+    {
+        "readme", "changelog", "changes", "history", "license", "licence", "copying", "notice",
+        "authors", "contributing",
+    }
+)  # fmt: skip
 DOC_SEGMENTS: frozenset[str] = frozenset({"docs", "doc"})
+DOC_IMAGE_EXTENSIONS: frozenset[str] = frozenset({".png", ".svg", ".jpg", ".jpeg", ".gif", ".webp"})
+# Accepted only under a DOC_SEGMENTS directory.
+DOC_DIR_EXTENSIONS: frozenset[str] = (
+    DOC_EXTENSIONS | COMPILED_DOC_EXTENSIONS | DOC_IMAGE_EXTENSIONS | frozenset({".txt"})
+)
 
 # code.changed: source-code extensions.
 CODE_EXTENSIONS: frozenset[str] = frozenset(
@@ -80,12 +99,13 @@ CODE_EXTENSIONS: frozenset[str] = frozenset(
         ".rb", ".php", ".pl", ".pm", ".lua", ".ex", ".exs", ".erl", ".hs", ".clj", ".dart",
         ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".m", ".mm", ".cs", ".fs", ".swift",
         ".sh", ".bash", ".zsh", ".ps1",
+        ".mdx",
     }
 )  # fmt: skip
 
 # frontend.ui: UI extensions, or a UI directory segment.
 FRONTEND_EXTENSIONS: frozenset[str] = frozenset(
-    {".tsx", ".jsx", ".vue", ".svelte", ".css", ".scss", ".sass", ".less", ".html", ".htm"}
+    {".tsx", ".jsx", ".vue", ".svelte", ".mdx", ".css", ".scss", ".sass", ".less", ".html", ".htm"}
 )
 FRONTEND_SEGMENTS: frozenset[str] = frozenset({"components"})
 
@@ -193,7 +213,10 @@ class _Ctx:
     base: str | None
 
 
-Matcher = Callable[[ChangedFile, _Ctx], bool]
+PathPredicate = Callable[[str], bool]
+# A content-aware matcher returns the candidate paths (see _candidates) it classifies; empty means
+# no match.
+Matcher = Callable[[ChangedFile, _Ctx], tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -203,6 +226,8 @@ class Rule:
     risk: Risk
     description: str
     match: Matcher
+    # Optional per-file note appended to the signal detail (e.g. why it fired fail-closed).
+    note: Callable[[ChangedFile], str | None] | None = None
 
 
 def _parts(path: str) -> tuple[tuple[str, ...], str, str, str]:
@@ -218,16 +243,18 @@ def _candidates(f: ChangedFile) -> tuple[str, ...]:
     return (f.path, f.old_path) if f.old_path and f.old_path != f.path else (f.path,)
 
 
-def _any_path(pred: Callable[[str], bool]) -> Matcher:
-    return lambda f, _ctx: any(pred(p) for p in _candidates(f))
+def _each_path(pred: PathPredicate) -> Matcher:
+    """A path rule: evaluated on every candidate path (new and old path of a rename)."""
+    return lambda f, _ctx: tuple(p for p in _candidates(f) if pred(p))
 
 
 def _is_doc(path: str) -> bool:
     dirs, _name, stem, ext = _parts(path)
     return (
         ext in DOC_EXTENSIONS
+        or ext in COMPILED_DOC_EXTENSIONS
         or (ext in ("", ".txt") and stem in DOC_TEXT_STEMS)
-        or any(d in DOC_SEGMENTS for d in dirs)
+        or (ext in DOC_DIR_EXTENSIONS and any(d in DOC_SEGMENTS for d in dirs))
     )
 
 
@@ -254,10 +281,29 @@ def _is_auth_path(path: str) -> bool:
     return stem in AUTH_WORDS or any(d in AUTH_WORDS for d in dirs)
 
 
-def _sensitive_identifier(f: ChangedFile, _ctx: _Ctx) -> bool:
-    if f.binary or not _is_code(f.path) or _is_test(f.path):
-        return False
-    return any(SENSITIVE_IDENTIFIER_RE.search(line) for line in f.added)
+def _hidden_lines(f: ChangedFile) -> str | None:
+    """Why the added lines of `f` are not fully visible, or None when they are."""
+    if f.status == FileStatus.DELETED:
+        return None  # nothing was added
+    if f.binary:
+        return "binary"
+    if f.truncated:
+        return "truncated"
+    return None
+
+
+def _sensitive_identifier(f: ChangedFile, _ctx: _Ctx) -> tuple[str, ...]:
+    if not _is_code(f.path) or _is_test(f.path):
+        return ()
+    # Fail closed: lines we cannot see may hold a secret.
+    if _hidden_lines(f) or any(SENSITIVE_IDENTIFIER_RE.search(line) for line in f.added):
+        return (f.path,)
+    return ()
+
+
+def _sensitive_note(f: ChangedFile) -> str | None:
+    why = _hidden_lines(f)
+    return f"{f.path}: added lines not fully visible ({why})" if why else None
 
 
 def _is_build_config_name(path: str) -> bool:
@@ -267,9 +313,12 @@ def _is_build_config_name(path: str) -> bool:
     )
 
 
-def _build_config_changed(f: ChangedFile, ctx: _Ctx) -> bool:
-    if not any(_is_build_config_name(p) for p in _candidates(f)):
-        return False
+def _build_config_changed(f: ChangedFile, ctx: _Ctx) -> tuple[str, ...]:
+    named = tuple(p for p in _candidates(f) if _is_build_config_name(p))
+    return named if named and _build_config_edit(f, ctx) else ()
+
+
+def _build_config_edit(f: ChangedFile, ctx: _Ctx) -> bool:
     name = _parts(f.path)[1]
     if name != "package.json" and name not in TOML_DEPENDENCY_KEYS:
         return True  # no dependency sections to discount: any edit is a config edit
@@ -319,43 +368,47 @@ CATALOGUE: tuple[Rule, ...] = (
         "docs.changed",
         "docs",
         Risk.LOW,
-        "documentation file (" + " ".join(sorted(DOC_EXTENSIONS)) + ", docs/ segment)",
-        _any_path(_is_doc),
+        "documentation file ("
+        + " ".join(sorted(DOC_EXTENSIONS | COMPILED_DOC_EXTENSIONS))
+        + ", README-style names, doc formats under docs/)",
+        _each_path(_is_doc),
     ),
     Rule(
         "code.changed",
         "code",
         Risk.STANDARD,
         "source-code file",
-        _any_path(_is_code),
+        _each_path(_is_code),
     ),
     Rule(
         "frontend.ui",
         "frontend",
         Risk.STANDARD,
         "UI file (markup, component or stylesheet)",
-        _any_path(_is_frontend),
+        _each_path(_is_frontend),
     ),
     Rule(
         "tests.changed",
         "tests",
         Risk.STANDARD,
         "test file",
-        _any_path(_is_test),
+        _each_path(_is_test),
     ),
     Rule(
         "security.auth_path",
         "security",
         Risk.ELEVATED,
         "path segment or file stem in {" + ", ".join(sorted(AUTH_WORDS)) + "}",
-        _any_path(_is_auth_path),
+        _each_path(_is_auth_path),
     ),
     Rule(
         "security.sensitive_identifier",
         "security",
         Risk.STANDARD,
-        "added non-test code line mentions a sensitive identifier",
+        "added non-test code line mentions a sensitive identifier, or its added lines are not "
+        "fully visible",
         _sensitive_identifier,
+        _sensitive_note,
     ),
     Rule(
         "build.config_changed",
@@ -369,7 +422,7 @@ CATALOGUE: tuple[Rule, ...] = (
         "policy",
         Risk.ELEVATED,
         f"{POLICY_PATH} changed; the change cannot alter its own plan (policy is read at BASE)",
-        _any_path(lambda p: p == POLICY_PATH),
+        _each_path(lambda p: p == POLICY_PATH),
     ),
 )
 
@@ -378,7 +431,7 @@ UNCLASSIFIED = Rule(
     "unknown",
     Risk.STANDARD,
     "file matched no signal rule; the plan is widened",
-    lambda _f, _ctx: False,
+    lambda _f, _ctx: (),
 )
 
 
@@ -433,7 +486,7 @@ def _custom_rule(spec: SignalRuleSpec) -> Rule:
         spec.domain,
         spec.risk,
         "policy rule: " + ", ".join(globs),
-        lambda f, _ctx: any(glob_match(p, g) for p in _candidates(f) for g in globs),
+        lambda f, _ctx: tuple(p for p in _candidates(f) if any(glob_match(p, g) for g in globs)),
     )
 
 
@@ -455,16 +508,34 @@ def evaluate_signals(repo: Path, change: ChangeSet, policy: Policy) -> tuple[Sig
         if s.id.startswith("custom.") and s.id not in builtin_ids
     )
     rules = CATALOGUE + custom
-    hits: dict[str, tuple[Rule, set[str]]] = {}
+    hits: dict[str, tuple[Rule, set[str], list[str]]] = {}
+
+    def hit(r: Rule, f: ChangedFile, paths: tuple[str, ...]) -> None:
+        _rule, files, notes = hits.setdefault(r.id, (r, set(), []))
+        files.update(paths)
+        note = r.note(f) if r.note else None
+        if note:
+            notes.append(note)
+
     for f in change.files:
-        matched = [r for r in rules if r.match(f, ctx)] or [UNCLASSIFIED]
-        for r in matched:
-            hits.setdefault(r.id, (r, set()))[1].add(f.path)
+        candidates = _candidates(f)
+        classified: set[str] = set()
+        for r in rules:
+            claimed = r.match(f, ctx)
+            if claimed:
+                classified.update(claimed)
+                hit(r, f, candidates)  # a rename lists both paths
+        if not classified.issuperset(candidates):
+            hit(UNCLASSIFIED, f, candidates)
     return tuple(
         Signal(
-            id=r.id, domain=r.domain, risk=r.risk, files=tuple(sorted(files)), detail=r.description
+            id=r.id,
+            domain=r.domain,
+            risk=r.risk,
+            files=tuple(sorted(files)),
+            detail="; ".join([r.description, *sorted(notes)]),
         )
-        for _id, (r, files) in sorted(hits.items())
+        for _id, (r, files, notes) in sorted(hits.items())
     )
 
 
