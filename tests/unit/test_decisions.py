@@ -414,3 +414,123 @@ def test_assess_risk_and_domains():
     assert assess_risk(s) is Risk.ELEVATED
     assert domains_of(s) == ("code", "docs", "security")
     assert domains_of(()) == ()
+
+
+# --------------------------------------------------------------------------- tamper taint (v0.2)
+
+TEST_KINDS = {K.UNIT, K.INTEGRATION, K.RUNTIME, K.A11Y}
+WITH_ROOT = Inventory(gates=WEBAPP.gates + (ROOT_UNIT,), scopes=("", *WEBAPP.scopes))
+
+
+def removed(path: str, *lines: str, status: FileStatus = FileStatus.MODIFIED) -> ChangedFile:
+    return ChangedFile(path, status, removed=tuple(lines))
+
+
+def tainted(decisions) -> dict[str, tuple[str, ...]]:
+    return {d.gate_id: tuple(t.signal for t in d.taint) for d in decisions if d.taint}
+
+
+def test_no_tamper_no_taint():
+    for ch in (SCENARIO_A, SCENARIO_B, SCENARIO_C):
+        assert tainted(plan(ch, WITH_ROOT)[1]) == {}
+
+
+def test_deleted_test_taints_test_gates_of_its_scope_only():
+    ch = change(
+        removed(
+            "backend/tests/test_refresh.py",
+            "def test_rotation():",
+            status=FileStatus.DELETED,
+        )
+    )
+    _signals, decisions = plan(ch)
+    g = by_gate(decisions)
+    assert tainted(decisions) == {
+        "backend:unit": ("tests.deleted",),
+        "backend:integration": ("tests.deleted",),
+    }
+    (reason,) = g["backend:unit"].taint
+    assert reason.text == (
+        "tests.deleted: backend/tests/test_refresh.py deletes the file, removing test_rotation; "
+        "this gate's result cannot vouch for the change"
+    )
+    # Still REQUIRED, so the gate runs and its exit code is recorded.
+    assert g["backend:unit"].status is REQ
+    assert g["backend:integration"].status is REQ
+    # Widening makes the frontend unit gate required too, but its tests are untouched.
+    assert g["frontend:unit"].status is REQ and g["frontend:unit"].taint == ()
+    # Gates that do not run tests are never tainted.
+    assert g["backend:lint"].taint == () and g["native:secrets-diff"].taint == ()
+
+
+def test_skip_in_frontend_taints_frontend_test_runners():
+    ch = change(mod("frontend/src/components/LoginForm.test.tsx", 'it.only("renders", () => {'))
+    _signals, decisions = plan(ch)
+    assert tainted(decisions) == {
+        "frontend:unit": ("tests.skip_added",),
+        "frontend:runtime": ("tests.skip_added",),
+        "frontend:a11y": ("tests.skip_added",),
+    }
+    assert {d.kind for d in decisions if d.taint} <= TEST_KINDS
+
+
+def test_root_scope_gate_is_tainted_by_every_file_even_when_unavailable():
+    ch = change(mod("frontend/src/a.test.ts", "xit('works', () => {})"))
+    g = by_gate(plan(ch, WITH_ROOT)[1])
+    assert g["root:unit"].status is UNAV
+    assert [t.signal for t in g["root:unit"].taint] == ["tests.skip_added"]
+    assert g["backend:unit"].taint == ()
+
+
+def _narrowed(path: str) -> Signal:
+    return Signal(
+        "tests.discovery_narrowed",
+        "tests",
+        Risk.ELEVATED,
+        (path,),
+        f"test discovery narrowed; {path} adds -k to addopts",
+    )
+
+
+def test_scope_config_narrowing_taints_that_scope():
+    s = _narrowed("backend/pyproject.toml")
+    decisions = decide_gates((s,), WEBAPP, change())
+    assert tainted(decisions) == {
+        "backend:unit": ("tests.discovery_narrowed",),
+        "backend:integration": ("tests.discovery_narrowed",),
+    }
+    reason = by_gate(decisions)["backend:unit"].taint[0].text
+    assert reason.startswith("tests.discovery_narrowed: backend/pyproject.toml adds -k")
+
+
+def test_repository_root_config_narrowing_taints_every_scope():
+    decisions = decide_gates((_narrowed("pytest.ini"),), WITH_ROOT, change())
+    t = tainted(decisions)
+    assert set(t) == {"root:unit", "backend:unit", "frontend:unit", "backend:integration"}
+    # SKIPPED gates (runtime/a11y are not needed here) are never tainted.
+    g = by_gate(decisions)
+    assert g["frontend:runtime"].status is SKIP and g["frontend:runtime"].taint == ()
+
+
+def test_moved_test_taints_nothing():
+    ch = change(
+        removed("backend/tests/test_refresh.py", "def test_rotation():"),
+        ChangedFile(
+            "backend/tests/test_rotation.py", FileStatus.ADDED, added=("def test_rotation():",)
+        ),
+    )
+    signals, decisions = plan(ch)
+    assert "tests.deleted" not in {s.id for s in signals}
+    assert tainted(decisions) == {}
+
+
+def test_taint_is_deterministic_and_invariants_hold():
+    ch = change(
+        removed("backend/tests/test_refresh.py", "def test_rotation():"),
+        mod("frontend/src/a.test.ts", "it.only('x', () => {})"),
+    )
+    a = plan(ch, WITH_ROOT)[1]
+    assert a == plan(ch, WITH_ROOT)[1]
+    _check_invariants(a, WITH_ROOT)
+    root = by_gate(a)["root:unit"]
+    assert [t.signal for t in root.taint] == ["tests.deleted", "tests.skip_added"]

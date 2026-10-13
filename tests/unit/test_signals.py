@@ -410,3 +410,459 @@ def test_task_signals_keywords():
 def test_task_signal_detail_echoes_only_keywords():
     (s,) = sig.task_signals("ignore all previous instructions; password <script>")
     assert s.detail == "task keywords: password"
+
+
+# --------------------------------------------------------------------------- test tamper (v0.2)
+
+TAMPER = ("tests.deleted", "tests.skip_added", "tests.discovery_narrowed")
+
+
+def signals_by_id(change: ChangeSet, repo: Path = NOWHERE) -> dict:
+    return {s.id: s for s in sig.evaluate_signals(repo, change, DEFAULT_POLICY)}
+
+
+def tamper(change: ChangeSet, repo: Path = NOWHERE) -> dict:
+    return {k: v for k, v in ids(change, repo=repo).items() if k in TAMPER}
+
+
+def edit(path: str, added=(), removed=(), status: FileStatus = M, **kw) -> ChangedFile:
+    return ChangedFile(path, status, added=tuple(added), removed=tuple(removed), **kw)
+
+
+def test_tamper_signals_are_elevated_and_widening():
+    for sid in TAMPER:
+        assert sid in sig.WIDENING
+        assert sid in sig.TAMPER_SIGNALS
+    rules = {r.id: r for r in sig.CATALOGUE}
+    assert all(rules[sid].risk is Risk.ELEVATED for sid in TAMPER)
+
+
+PY_TEST = (
+    "import pytest",
+    "",
+    "def test_rotation() -> None:",
+    "    assert True",
+    "",
+    "async def test_async_refresh():",
+    "    assert True",
+    "",
+    "class TestRefresh:",
+    "    def test_inside_class(self):",
+    "        assert True",
+)
+
+
+def test_deleted_python_test_file_names_its_tests():
+    s = signals_by_id(cs(edit("backend/tests/test_refresh.py", removed=PY_TEST, status=D)))
+    deleted = s["tests.deleted"]
+    assert deleted.files == ("backend/tests/test_refresh.py",)
+    assert deleted.risk is Risk.ELEVATED
+    for name in ("test_rotation", "test_async_refresh", "TestRefresh", "test_inside_class"):
+        assert name in deleted.detail
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "def test_rotation():",
+        "    def test_method(self):",
+        "async def test_async():",
+        "class TestThing:",
+        "class TestThing(unittest.TestCase):",
+    ],
+)
+def test_removed_python_definition_is_a_deletion(line):
+    assert "tests.deleted" in tamper(cs(edit("tests/test_x.py", removed=(line,))))
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'it("renders", () => {',
+        "test('submits', async () => {",
+        "describe(`LoginForm`, () => {",
+        'test.each([[1], [2]])("adds %i", (n) => {',
+        "  it('nested', () => {})",
+    ],
+)
+def test_removed_js_definition_is_a_deletion(line):
+    path = "frontend/src/components/LoginForm.test.tsx"
+    assert "tests.deleted" in tamper(cs(edit(path, removed=(line,))))
+
+
+def test_changed_signature_is_not_a_deletion():
+    f = edit(
+        "tests/test_x.py",
+        removed=("def test_rotation():",),
+        added=("def test_rotation() -> None:",),
+    )
+    assert tamper(cs(f)) == {}
+
+
+def test_moving_a_test_between_files_is_not_a_deletion():
+    src = edit("backend/tests/test_refresh.py", removed=("def test_rotation():", "    pass"))
+    dst = edit(
+        "backend/tests/test_rotation.py", added=("def test_rotation():", "    pass"), status=A
+    )
+    assert tamper(cs(src, dst)) == {}
+
+
+def test_moving_a_test_into_a_deleted_files_place_is_not_a_deletion():
+    src = edit("tests/test_a.py", removed=PY_TEST, status=D)
+    dst = edit("tests/test_b.py", added=PY_TEST, status=A)
+    assert tamper(cs(src, dst)) == {}
+
+
+def test_partial_move_names_only_the_missing_test():
+    src = edit("tests/test_a.py", removed=("def test_moved():", "def test_dropped():"))
+    dst = edit("tests/test_b.py", added=("def test_moved():",))
+    detail = signals_by_id(cs(src, dst))["tests.deleted"].detail
+    assert "test_dropped" in detail
+    assert "test_moved" not in detail
+
+
+def test_a_move_counts_each_definition_once():
+    # Two files each drop a test_x; only one is re-added elsewhere.
+    a = edit("tests/test_a.py", removed=("def test_x():",))
+    b = edit("tests/test_b.py", removed=("def test_x():",))
+    c = edit("tests/test_c.py", added=("def test_x():",), status=A)
+    assert tamper(cs(a, b, c)) == {"tests.deleted": ("tests/test_b.py",)}
+
+
+def test_rename_between_test_paths_is_not_a_deletion():
+    f = ChangedFile("tests/unit/test_b.py", R, old_path="tests/test_a.py")
+    assert tamper(cs(f)) == {}
+
+
+def test_turning_it_into_it_skip_is_a_skip_not_a_deletion():
+    f = edit(
+        "src/a.test.ts",
+        removed=('it("works", () => {',),
+        added=('it.skip("works", () => {',),
+    )
+    assert tamper(cs(f)) == {"tests.skip_added": ("src/a.test.ts",)}
+
+
+def test_deleted_test_file_of_unparsed_language_fires():
+    assert "tests.deleted" in tamper(
+        cs(edit("pkg/x_test.go", removed=("func TestX(t *T) {}",), status=D))
+    )
+
+
+def test_deleted_helper_without_tests_is_not_a_deletion():
+    helper = edit(
+        "backend/tests/helpers.py", removed=("def make_token():", "    return 1"), status=D
+    )
+    assert tamper(cs(helper)) == {}
+
+
+def test_hidden_test_lines_fail_closed():
+    s = tamper(cs(edit("tests/test_x.py", removed=("x = 1",), truncated=True)))
+    assert set(s) == {"tests.deleted", "tests.skip_added"}
+    assert "tests.deleted" in tamper(cs(edit("tests/test_x.py", status=D, truncated=True)))
+    assert "tests.deleted" in tamper(cs(edit("tests/test_x.py", binary=True)))
+
+
+def test_rename_out_of_test_paths_is_a_deletion(tmp_path):
+    r = GitRepo(tmp_path / "r")
+    r.write("tests/test_a.py", "\n".join(PY_TEST) + "\n")
+    base = r.commit("base")
+    f = ChangedFile("archive/a.py", R, old_path="tests/test_a.py")
+    s = signals_by_id(cs(f, base=base), repo=r.root)
+    assert "test_rotation" in s["tests.deleted"].detail
+    assert "(renamed from tests/test_a.py)" in s["tests.deleted"].detail
+    assert set(s["tests.deleted"].files) == {"archive/a.py", "tests/test_a.py"}
+
+
+SKIP_MARKERS_PY = [
+    "@pytest.mark.skip",
+    '@pytest.mark.skip(reason="flaky")',
+    "@pytest.mark.skipif(sys.platform == 'win32', reason='x')",
+    "@pytest.mark.xfail(strict=False)",
+    "pytestmark = pytest.mark.skip",
+    "    pytest.skip('not today')",
+    "    pytest.xfail('known')",
+    "@unittest.skip('later')",
+    "@unittest.skipIf(True, 'x')",
+    "@unittest.skipUnless(False, 'x')",
+    "@skip('x')",
+    "@mark.xfail",
+    "    raise unittest.SkipTest('x')",
+    "    self.skipTest('x')",
+]
+
+
+@pytest.mark.parametrize("line", SKIP_MARKERS_PY)
+def test_python_skip_markers(line):
+    assert "tests.skip_added" in tamper(cs(edit("backend/tests/test_x.py", added=(line,))))
+
+
+SKIP_MARKERS_JS = [
+    'it.skip("works", () => {})',
+    "test.skip('works', () => {})",
+    "describe.skip('suite', () => {})",
+    "xit('works', () => {})",
+    "xdescribe('suite', () => {})",
+    "it.todo('later')",
+    "test.concurrent.skip('x', async () => {})",
+    "it.only('works', () => {})",
+    "test.only('works', () => {})",
+    "describe.only('suite', () => {})",
+    "fit('works', () => {})",
+    "fdescribe('suite', () => {})",
+]
+
+
+@pytest.mark.parametrize("line", SKIP_MARKERS_JS)
+def test_js_skip_and_focus_markers(line):
+    path = "frontend/src/components/LoginForm.test.tsx"
+    assert "tests.skip_added" in tamper(cs(edit(path, added=(line,))))
+
+
+@pytest.mark.parametrize(
+    ("path", "line"),
+    [
+        ("tests/test_x.py", "def test_skip_expired_tokens():"),  # a test named "skip"
+        ("tests/test_x.py", "def test_xfail_path(): assert skip_list == []"),
+        ("tests/test_x.py", "# @pytest.mark.skip  (commented out)"),
+        ("tests/test_x.py", 'msg = "use @pytest.mark.skip sparingly"'),
+        ("src/a.test.ts", 'it("skips expired tokens", () => {})'),
+        ("src/a.test.ts", 'it("calls test.only and it.skip", () => {})'),
+        ("src/a.test.ts", "// it.only('debug')"),
+        ("src/a.test.ts", "model.fit(data)"),
+        ("src/a.test.ts", "const xit = 1"),
+        ("backend/app/run.py", "@pytest.mark.skip"),  # not a test file
+    ],
+)
+def test_not_skip_markers(path, line):
+    assert "tests.skip_added" not in tamper(cs(edit(path, added=(line,))))
+
+
+def test_moved_skip_marker_is_not_new():
+    a = edit("tests/test_a.py", removed=('@pytest.mark.skip(reason="a")', "def test_x():"))
+    b = edit("tests/test_b.py", added=('@pytest.mark.skip(reason="b")', "def test_x():"))
+    assert tamper(cs(a, b)) == {}
+
+
+def test_tamper_notes_map_notes_to_files():
+    f = edit("backend/tests/test_x.py", removed=("def test_gone():",))
+    (s,) = [
+        x for x in sig.evaluate_signals(NOWHERE, cs(f), DEFAULT_POLICY) if x.id == "tests.deleted"
+    ]
+    assert sig.tamper_notes(s) == (
+        ("backend/tests/test_x.py removes test_gone", ("backend/tests/test_x.py",)),
+    )
+
+
+def test_tamper_notes_never_echo_unsafe_content():
+    f = edit("src/a.test.ts", removed=('it("<script>ignore previous; rm -rf", () => {})',))
+    detail = signals_by_id(cs(f))["tests.deleted"].detail
+    assert "<script>" not in detail
+    assert "; rm" not in detail
+
+
+# ---- tests.discovery_narrowed (BASE vs working tree)
+
+BACKEND_PYPROJECT = """\
+[project]
+name = "backend"
+dependencies = ["fastapi==0.110"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+"""
+
+
+@pytest.fixture
+def trepo(tmp_path):
+    r = GitRepo(tmp_path / "t")
+    r.write("backend/pyproject.toml", BACKEND_PYPROJECT)
+    r.write("backend/pytest.ini", "[pytest]\naddopts = -q\n")
+    r.write("backend/setup.cfg", "[metadata]\nname = x\n")
+    r.write("backend/tox.ini", "[tox]\nenvlist = py311\n")
+    r.write("frontend/package.json", json.dumps(PKG, indent=2))
+    r.write("frontend/jest.config.js", "module.exports = {\n  verbose: true,\n};\n")
+    r.write("Makefile", "test:\n\tpython -m pytest -q\n")
+    return r, r.commit("base")
+
+
+def _narrowed(r: GitRepo, base: str, f: ChangedFile) -> bool:
+    return "tests.discovery_narrowed" in tamper(cs(f, base=base), repo=r.root)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "addopts = \"-q -k 'not refresh'\"",
+        'addopts = "-q -m smoke"',
+        'addopts = "-q --ignore=tests/test_refresh.py"',
+        'addopts = ["-q", "--deselect", "tests/test_refresh.py::test_rotation"]',
+        'addopts = "-q --co"',
+        'addopts = "-q"\ntestpaths = ["tests/unit"]',
+        'addopts = "-q"\npython_files = ["test_api.py"]',
+        'addopts = "-q"\npython_functions = ["check"]',
+        'addopts = "-q"\nnorecursedirs = ["tests/slow"]',
+    ],
+)
+def test_pyproject_narrowing(trepo, replacement):
+    r, base = trepo
+    r.write("backend/pyproject.toml", BACKEND_PYPROJECT.replace('addopts = "-q"', replacement))
+    assert _narrowed(r, base, f("backend/pyproject.toml"))
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ('dependencies = ["fastapi==0.110"]', 'dependencies = ["fastapi==0.111"]'),  # bump
+        ('testpaths = ["tests"]', 'testpaths = ["tests", "integration"]'),  # wider
+        ('testpaths = ["tests"]\n', ""),  # no testpaths: everything
+        ('addopts = "-q"', 'addopts = "-q -x --strict-markers"'),  # not narrowing options
+        ('addopts = "-q"', 'addopts = "-q"\npython_files = ["test_*.py", "*_test.py", "t_*.py"]'),
+        ('addopts = "-q"', 'addopts = "-q"\nnorecursedirs = [".*", "build"]'),  # subset of defaults
+    ],
+)
+def test_pyproject_not_narrowing(trepo, old, new):
+    r, base = trepo
+    assert old in BACKEND_PYPROJECT
+    r.write("backend/pyproject.toml", BACKEND_PYPROJECT.replace(old, new))
+    assert not _narrowed(r, base, f("backend/pyproject.toml"))
+
+
+def test_removing_a_narrowing_option_is_widening(tmp_path):
+    r = GitRepo(tmp_path / "w")
+    r.write("pytest.ini", "[pytest]\naddopts = -q -k 'not slow'\n")
+    base = r.commit("base")
+    r.write("pytest.ini", "[pytest]\naddopts = -q\n")
+    assert not _narrowed(r, base, f("pytest.ini"))
+
+
+@pytest.mark.parametrize(
+    ("path", "content"),
+    [
+        ("backend/pytest.ini", "[pytest]\naddopts = -q -k 'not refresh'\n"),
+        ("backend/pytest.ini", "[pytest]\naddopts = -q\ntestpaths = tests/unit\n"),
+        ("backend/setup.cfg", "[metadata]\nname = x\n\n[tool:pytest]\naddopts = -m 'not slow'\n"),
+        ("backend/tox.ini", "[tox]\nenvlist = py311\n\n[pytest]\naddopts = --deselect t.py::x\n"),
+        ("backend/pytest.ini", "addopts = -k x\n"),  # unparsable: fail closed
+    ],
+)
+def test_ini_narrowing(trepo, path, content):
+    r, base = trepo
+    r.write(path, content)
+    assert _narrowed(r, base, f(path))
+
+
+def test_added_pytest_config_with_testpaths_narrows(trepo):
+    r, base = trepo
+    r.write("backend/tests/pytest.ini", "[pytest]\ntestpaths = unit\n")
+    assert _narrowed(r, base, f("backend/tests/pytest.ini", A))
+
+
+def test_ini_without_pytest_section_is_not_narrowing(trepo):
+    r, base = trepo
+    r.write("backend/setup.cfg", "[metadata]\nname = y\n\n[flake8]\nignore = E501\n")
+    assert not _narrowed(r, base, f("backend/setup.cfg"))
+
+
+def _pkg(r: GitRepo, **changes) -> None:
+    pkg = json.loads(json.dumps(PKG))
+    for k, v in changes.items():
+        if k == "scripts":
+            pkg["scripts"].update(v)
+        else:
+            pkg[k] = v
+    r.write("frontend/package.json", json.dumps(pkg, indent=2))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"jest": {"testPathIgnorePatterns": ["/node_modules/", "LoginForm"]}},
+        {"jest": {"testMatch": ["**/*.unit.test.ts"]}},
+        {"jest": {"testRegex": "smoke\\.test\\.ts$"}},
+        {"scripts": {"test": "vitest -t login"}},
+        {"scripts": {"test": "jest --testPathIgnorePatterns LoginForm"}},
+        {"scripts": {"test": "jest --passWithNoTests"}},
+        {"scripts": {"test:py": "cd ../backend && python -m pytest -k 'not refresh'"}},
+        {"scripts": {"test:py": "pytest --deselect=tests/test_a.py::test_x"}},
+    ],
+)
+def test_package_json_narrowing(trepo, changes):
+    r, base = trepo
+    _pkg(r, **changes)
+    assert _narrowed(r, base, f("frontend/package.json"))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"devDependencies": {"vitest": "2.0.0"}},
+        {"jest": {"verbose": True}},
+        {"jest": {"testPathIgnorePatterns": ["/node_modules/"]}},  # the default
+        {"scripts": {"test:py": "python -m pytest -q"}},  # -m belongs to python, not pytest
+        {"scripts": {"lint": "eslint --max-warnings 0 ."}},
+    ],
+)
+def test_package_json_not_narrowing(trepo, changes):
+    r, base = trepo
+    _pkg(r, **changes)
+    assert not _narrowed(r, base, f("frontend/package.json"))
+
+
+def test_widening_jest_test_match_is_not_narrowing(tmp_path):
+    r = GitRepo(tmp_path / "j")
+    r.write("package.json", json.dumps({"jest": {"testMatch": ["**/*.test.ts"]}}))
+    base = r.commit("base")
+    r.write("package.json", json.dumps({"jest": {"testMatch": ["**/*.test.ts", "**/*.spec.ts"]}}))
+    assert not _narrowed(r, base, f("package.json"))
+    r.write("package.json", json.dumps({"jest": {"testMatch": ["**/*.spec.ts"]}}))
+    assert _narrowed(r, base, f("package.json"))
+
+
+def test_js_config_key_change_narrows(trepo):
+    r, base = trepo
+    r.write(
+        "frontend/jest.config.js",
+        "module.exports = {\n  verbose: true,\n  testPathIgnorePatterns: [\n"
+        '    "/node_modules/",\n    "LoginForm",\n  ],\n};\n',
+    )
+    added = ("  testPathIgnorePatterns: [", '    "/node_modules/",', '    "LoginForm",', "  ],")
+    assert _narrowed(r, base, edit("frontend/jest.config.js", added=added))
+    # an entry added to an existing multi-line array also counts
+    assert _narrowed(r, base, edit("frontend/jest.config.js", added=('    "LoginForm",',)))
+
+
+def test_js_config_unrelated_change_is_not_narrowing(trepo):
+    r, base = trepo
+    r.write("frontend/jest.config.js", "module.exports = {\n  verbose: false,\n};\n")
+    f_ = edit(
+        "frontend/jest.config.js", added=("  verbose: false,",), removed=("  verbose: true,",)
+    )
+    assert not _narrowed(r, base, f_)
+
+
+def test_makefile_narrowing(trepo):
+    r, base = trepo
+    narrowing = edit(
+        "Makefile",
+        added=("\tpython -m pytest -q --ignore=tests/test_refresh.py",),
+        removed=("\tpython -m pytest -q",),
+    )
+    assert _narrowed(r, base, narrowing)
+    ordinary = edit(
+        "Makefile", added=("\tpython -m pytest -q -x",), removed=("\tpython -m pytest -q",)
+    )
+    assert not _narrowed(r, base, ordinary)
+    unchanged = edit("Makefile", added=("\t@pytest -k smoke",), removed=("\tpytest -k smoke",))
+    assert not _narrowed(r, base, unchanged)
+
+
+def test_command_narrowing_parses_runner_options():
+    assert sig.command_narrowing("python -m pytest -q") == {}
+    assert sig.command_narrowing("pytest -kfoo -m 'not slow'") == {
+        ("-k", "foo"): 1,
+        ("-m", "not slow"): 1,
+    }
+    assert sig.command_narrowing("npm ci && npx jest -t login") == {("-t", "login"): 1}
+    assert sig.command_narrowing("eslint -m x") == {}
