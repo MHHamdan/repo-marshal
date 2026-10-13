@@ -1,0 +1,148 @@
+# Running `repomarshal done` in CI
+
+A local `repomarshal done` is advisory. The coding agent runs as your user and can, with deliberate
+effort, tamper with anything on that machine: the working tree, `.repomarshal/`, even the
+RepoMarshal installation. The authoritative verdict is a re-run of `repomarshal done` somewhere the
+agent cannot write. CI is the usual choice ([architecture §7](../architecture.md#7-tamper-resistance-and-trust-boundary),
+[threat model](../security/threat-model.md) T4, T5, T7, T12, T20).
+
+This repository runs the recipe below on itself: see the `dogfood` job in
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml).
+
+## 1. Pin BASE explicitly
+
+Pass the pull request's base commit: `repomarshal done --base <base sha>`.
+
+Policy (`repomarshal.toml`) and gate definitions are read from BASE, and the diff against BASE
+decides which gates are required. Without `--base`, RepoMarshal resolves BASE automatically: the
+merge-base with `origin/HEAD`, then `origin/main`/`origin/master`, then local `main`/`master`. That
+is weaker in CI:
+
+- a shallow clone may not contain the merge-base, or any of those refs;
+- the result depends on which refs the checkout happened to fetch;
+- whoever controls the refs controls which policy judges the change.
+
+The PR base SHA comes from the CI platform's event data, not from the repository, so the change
+under review cannot move it. Check out full history (`fetch-depth: 0` on GitHub) so that the base
+commit and the diff are both available.
+
+## 2. Install the tools so the gates are AVAILABLE
+
+`done` runs the repository's own commands: inferred ones (package.json scripts, ruff, mypy, pyright,
+pytest) and any `[gates.*]` in `repomarshal.toml` at BASE. If a required gate's command is not
+installed, that gate is UNAVAILABLE and the verdict is **UNKNOWN**, never PASS. Install the same
+toolchain a developer would use (`pip install -e ".[dev]"`, `npm ci`, ...) before running `done`.
+`repomarshal done --dry-run` lists the gates that would run without running them.
+
+## 3. Exit codes
+
+| Exit | Verdict | Job result |
+|---|---|---|
+| 0 | PASS | success |
+| 1 | FAIL | failure |
+| 2 | UNKNOWN | failure |
+| 3 | BLOCKED (invalid policy, not a git repository) | failure |
+| 4 | internal error | failure |
+
+Use the exit code as the job's result. Do not mask it with `continue-on-error`, `|| true` or similar.
+UNKNOWN failing the job is deliberate: "could not check" is not "passed". Fix it by making the gate
+available (install the tool, or define the gate in `repomarshal.toml` on the base branch), not by
+ignoring it.
+
+Make the job a **required status check** in branch protection (or a ruleset) for the protected
+branch, so a PR cannot merge unless it passes. Require the job by its exact check name, e.g.
+`ci / dogfood`, and keep that name stable: renaming the job silently drops the requirement.
+
+## 4. Trust caveats
+
+- **The workflow file comes from the PR.** A `pull_request` workflow runs the version of
+  `.github/workflows/*.yml` in the PR's merge commit. A PR can edit the job to skip `done` or to
+  always exit 0. The status check still reports, so the protection is human: require review for
+  workflow changes with CODEOWNERS on `.github/workflows/` plus "Require review from Code Owners",
+  and do not let the change's author approve it. RepoMarshal itself reads policy from BASE, but it
+  cannot protect the workflow that invokes it.
+- **Never use `pull_request_target` with a checkout of the PR's code.** That event runs with the
+  base repository's token and secrets, so the PR's code (which the gates execute) would run with
+  them.
+- **The gates run the PR's code.** Tests, linters and scripts are the change's own code. Give the
+  job no secrets and no write permissions: `permissions: contents: read`, `persist-credentials:
+  false` on checkout, no deploy keys or cloud credentials in its environment.
+- **A PASS is still only as good as the tests.** RepoMarshal proves which commands ran against which
+  exact content and how they exited, not that the tests are meaningful.
+
+## 5. Keep the evidence
+
+`done` writes an evidence record under `.repomarshal/evidence/`, and `--json` prints the verdict,
+reasons, and the record. Upload both as a build artifact so a reviewer can see what ran, against
+which tree digest and BASE, without re-running it. Upload with `if: always()`: the evidence matters
+most when the verdict is not PASS. Evidence is an audit trail; it is never an input to a verdict.
+
+## 6. GitHub Actions example
+
+Pin actions by full commit SHA. The SHAs below are the ones this repository uses; re-resolve them
+with `git ls-remote https://github.com/<owner>/<repo>.git 'refs/tags/<tag>*'` (for an annotated tag,
+use the peeled `^{}` commit).
+
+```yaml
+name: repomarshal
+on:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: repomarshal-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  done:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      # Install RepoMarshal (pinned to a commit) and every tool your gates run.
+      - run: |
+          python -m pip install "repomarshal @ git+https://github.com/MHHamdan/repo-marshal@<commit-sha>"
+          python -m pip install -e ".[dev]"   # your project's toolchain: ruff, pytest, ...
+      - name: repomarshal done
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set +e
+          repomarshal done --base "$BASE_SHA" --json > repomarshal-done.json
+          code=$?
+          set -e
+          cat repomarshal-done.json
+          exit "$code"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: repomarshal-evidence
+          path: |
+            repomarshal-done.json
+            .repomarshal/evidence/
+```
+
+RepoMarshal is not yet on PyPI, so install it from a pinned commit (or a wheel you build). Passing
+the SHA through `env` rather than interpolating `${{ }}` into the script is a habit worth keeping,
+even for a SHA.
+
+## 7. Other CI systems
+
+The recipe is the same everywhere: full history, an explicit BASE from the platform (not from the
+repository), tools installed, the exit code respected, evidence kept, no secrets.
+
+```sh
+#!/bin/sh
+# BASE_SHA: the target branch commit your CI platform reports for this merge request.
+set -u
+git cat-file -e "$BASE_SHA^{commit}" || git fetch --no-tags origin "$BASE_SHA"  # BASE must exist
+repomarshal done --base "$BASE_SHA" --json > repomarshal-done.json
+code=$?
+cat repomarshal-done.json
+exit "$code"                                # 0 PASS; 1 FAIL, 2 UNKNOWN, 3 BLOCKED, 4 error
+```
