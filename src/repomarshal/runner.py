@@ -106,12 +106,16 @@ def _run(repo: Path, gate: Gate, change: ChangeSet, env: Mapping[str, str] | Non
             return native.run_secrets_diff(change)
         return GateResult(gate.id, gate.kind, ResultStatus.UNKNOWN, "unknown native gate")
     if gate.provider != "command":
-        return GateResult(
-            gate.id,
-            gate.kind,
-            ResultStatus.UNKNOWN,
-            f"provider {gate.provider!r} is not supported in this version",
-        )
+        from repomarshal import providers  # named adapters (ADR-002)
+
+        if not gate.available:
+            return GateResult(
+                gate.id,
+                gate.kind,
+                ResultStatus.UNKNOWN,
+                f"unavailable: {gate.unavailable_reason or 'provider tool not found'}",
+            )
+        return providers.run(repo, gate, change, env)
     if not gate.available:
         return GateResult(
             gate.id,

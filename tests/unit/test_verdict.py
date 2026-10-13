@@ -94,10 +94,41 @@ def test_tree_changed_downgrades_pass():
     assert v is Verdict.UNKNOWN and any("working tree changed" in r for r in reasons)
 
 
-def test_waived_needs_policy():
+def _waiver(target):
+    from repomarshal.model import Waiver, WaiverSource
+
+    return Waiver(target, "hardware unavailable", "maintainer", WaiverSource.GITHUB_LABEL, "t")
+
+
+def test_waived_status_without_waiver_record_is_unknown():
     p = plan(dec("a"))
-    assert fold(p, (res("a", R.WAIVED),), False)[0] is Verdict.UNKNOWN
-    assert fold(p, (res("a", R.WAIVED),), False, waivers_permit_pass=True)[0] is Verdict.PASS
+    assert fold(p, (res("a", R.WAIVED),), False, waivers_permit_pass=True)[0] is Verdict.UNKNOWN
+
+
+def test_waiver_needs_policy():
+    p = plan(dec("a"))
+    unknown = (res("a", R.UNKNOWN),)
+    assert fold(p, unknown, False, waivers=(_waiver("a"),))[0] is Verdict.UNKNOWN
+    v, reasons = fold(p, unknown, False, waivers_permit_pass=True, waivers=(_waiver("a"),))
+    assert v is Verdict.PASS and any("WAIVED by maintainer" in r for r in reasons)
+
+
+def test_unavailable_kind_level_decision_can_be_waived_by_kind():
+    p = plan(dec("a"), dec(None, D.UNAVAILABLE, GateKind.INTEGRATION))
+    w = (_waiver("integration"),)
+    assert fold(p, (res("a", R.PASS),), False, True, w)[0] is Verdict.PASS
+    assert fold(p, (res("a", R.PASS),), False, True, (_waiver("unit"),))[0] is Verdict.UNKNOWN
+
+
+def test_fail_is_never_waivable():
+    p = plan(dec("a"))
+    assert fold(p, (res("a", R.FAIL),), False, True, (_waiver("a"),))[0] is Verdict.FAIL
+
+
+def test_tree_change_and_nothing_verified_are_not_waivable():
+    p = plan(dec("a"))
+    assert fold(p, (res("a", R.UNKNOWN),), True, True, (_waiver("a"),))[0] is Verdict.UNKNOWN
+    assert fold(plan(), (), False, True, (_waiver("a"),))[0] is Verdict.UNKNOWN
 
 
 def test_unrecognised_status_fails_closed():

@@ -60,6 +60,12 @@ def _parser() -> argparse.ArgumentParser:
     dn.add_argument("--json", action="store_true", help="machine-readable output")
     dn.add_argument("--dry-run", action="store_true", help="list the gates; run nothing")
     dn.add_argument(
+        "--waivers",
+        choices=["none", "local", "github"],
+        default="local",
+        help="where human waivers may come from (default: local; CI: github). Hook mode: none",
+    )
+    dn.add_argument(
         "--hook",
         choices=["claude-code"],
         default=None,
@@ -75,6 +81,11 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="print the hook/MCP config snippet for an agent host instead of writing files",
     )
+
+    wv = sub.add_parser("waive", help="record a human waiver for one gate (interactive only)")
+    wv.add_argument("gate", help="gate id (e.g. backend:unit) or kind for a kind-level decision")
+    wv.add_argument("--reason", required=True, help="why this gate may be accepted unverified")
+    wv.add_argument("--repo", default=".", help="repository path (default: .)")
 
     dr = sub.add_parser("doctor", help="report the detected stack, gates, providers and config")
     dr.add_argument("--repo", default=".", help="repository path (default: .)")
@@ -98,6 +109,10 @@ def main(argv: list[str] | None = None) -> int:
         from repomarshal import initcmd
 
         return initcmd.run(args)
+    if args.command == "waive":
+        from repomarshal import waivers
+
+        return waivers.cli_waive(args)
     if args.command == "doctor":
         from repomarshal import doctor
 
@@ -141,7 +156,13 @@ def _plan(args: argparse.Namespace) -> int:
 
 
 def _done(args: argparse.Namespace) -> int:
-    r = api.done(args.repo or ".", task=args.task, base=args.base, dry_run=args.dry_run)
+    r = api.done(
+        args.repo or ".",
+        task=args.task,
+        base=args.base,
+        dry_run=args.dry_run,
+        waivers=args.waivers,
+    )
     if args.json:
         print(
             json.dumps(

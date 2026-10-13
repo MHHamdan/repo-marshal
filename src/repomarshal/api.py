@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from repomarshal import __version__, anchor, evidence, git, planner, runner, verdict
+from repomarshal import waivers as waivers_mod
 from repomarshal.model import (
     Cost,
     DecisionStatus,
@@ -65,7 +66,9 @@ def plan(
     return planner.compile_plan(root, task=task, base=base_sha, path_env=_path_env(env))
 
 
-def _record(root: Path, p: Plan, results, before: str, after: str, v, reasons) -> DoneResult:
+def _record(
+    root: Path, p: Plan, results, before: str, after: str, v, reasons, granted=()
+) -> DoneResult:
     record = EvidenceRecord(
         plan_hash=p.plan_hash,
         base=p.change.base,
@@ -78,6 +81,7 @@ def _record(root: Path, p: Plan, results, before: str, after: str, v, reasons) -
         verdict_reasons=tuple(reasons),
         repomarshal_version=__version__,
         created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        waivers=tuple(granted),
     ).with_digest()
     evidence.write_plan(root, p)
     path = evidence.write_record(root, record)
@@ -115,6 +119,7 @@ def done(
     base: str | None = None,
     env: Mapping[str, str] | None = None,
     dry_run: bool = False,
+    waivers: str = "none",
 ) -> DoneResult:
     root = git.repo_root(repo)
     nested = _nested_problem(root)
@@ -213,5 +218,10 @@ def done(
         results.append(result)
     after = git.tree_digest(root, base=base_sha)
     tree_changed = tree_changed or before != after
-    v, reasons = verdict.fold(p, tuple(results), tree_changed)
-    return _record(root, p, results, before, after, v, reasons)
+    # v0.3 human override: only the caller decides where waivers may come from (the hook and the
+    # MCP server pass "none"); waivers.collect decides which ones are genuine.
+    granted = waivers_mod.collect(root, p, waivers, env) if waivers != "none" else ()
+    v, reasons = verdict.fold(
+        p, tuple(results), tree_changed, p.policy.waivers_permit_pass, granted
+    )
+    return _record(root, p, results, before, after, v, reasons, granted)

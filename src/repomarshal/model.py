@@ -314,6 +314,8 @@ class SkillPick:
 class PolicyRef:
     source: str
     digest: str
+    # v0.3: copied from the BASE policy so `done` can fold waivers without re-reading it.
+    waivers_permit_pass: bool = False
 
 
 @dataclass(frozen=True)
@@ -358,6 +360,31 @@ class GateResult:
     stdout_sha256: str | None = None
     stderr_sha256: str | None = None
     output_tail: tuple[str, ...] = ()  # last lines, redacted
+    tool: str | None = None  # v0.3: provider tool name and version, e.g. "skillspector 2.12.0"
+
+
+class WaiverSource(enum.StrEnum):
+    GITHUB_LABEL = "github-label"  # a PR label applied by an authorised human (CI only)
+    GITHUB_REVIEW = "github-review"  # an approving review by a CODEOWNER (CI only)
+    LOCAL_CLI = "local-cli"  # `repomarshal waive` at an interactive terminal (local only)
+
+
+@dataclass(frozen=True)
+class Waiver:
+    """A human decision to accept an unverifiable gate (MISSION.md §54).
+
+    Waivers apply only to gates whose outcome is UNKNOWN or UNAVAILABLE; a FAIL is negative
+    evidence and is never waivable. A waiver counts towards PASS only when the BASE policy sets
+    completion.waivers_permit_pass; it is always listed in the evidence record.
+    """
+
+    target: str  # a gate id ("backend:unit") or a kind for kind-level decisions ("integration")
+    reason: str  # non-empty, human-written
+    identity: str  # who granted it (GitHub login, or local git/OS identity)
+    source: WaiverSource
+    granted_at: str  # UTC ISO-8601
+    reference: str = ""  # e.g. the label event / review URL, or the local waiver file path
+    tree_digest: str | None = None  # local waivers bind to the tree they were granted for
 
 
 @dataclass(frozen=True)
@@ -377,6 +404,7 @@ class EvidenceRecord:
         "Local verdict: advisory for the agent loop. The authoritative verdict is a re-run of "
         "`repomarshal done` where the agent cannot write (CI or a reviewer)."
     )
+    waivers: tuple[Waiver, ...] = ()  # v0.3: every waiver that was considered
     schema_version: str = SCHEMA_VERSION
     record_digest: str = ""
 

@@ -642,6 +642,9 @@ def build_inventory(
             gate = _with_reason(gate, extra)
         gates.append(_availability(gate, repo, path_env))
     gates.extend(native_gates())
+    from repomarshal import providers  # v0.3: named adapters contribute gates read at BASE
+
+    gates.extend(providers.discover(repo, base, change, path_env))
 
     duplicates = sorted(i for i, n in Counter(g.id for g in gates).items() if n > 1)
     if duplicates:

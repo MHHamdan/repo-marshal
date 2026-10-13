@@ -1,0 +1,8 @@
+# RepoMarshal policy for this repository. Read from the BASE commit only: edits in a PR take
+# effect after they merge.
+version = 1
+
+[completion]
+# A maintainer can accept an unverifiable gate (UNKNOWN / UNAVAILABLE, never FAIL) on a PR with
+# a `repomarshal-waive:<gate>` label or a CODEOWNER review (see docs/guides/ci.md).
+waivers_permit_pass = true

@@ -4,42 +4,41 @@ _Last updated: 2026-10-13_
 
 ## Current phase
 
-**v0.2 is complete** on branch `claude/v0.2` and is waiting for the owner to verify and merge.
-Phases 1–5 and v0.1 are merged to main.
+**v0.3 is in progress** on branch `claude/v0.3`, which branched from `origin/main` at 70da76d. v0.2
+is merged to main and was verified by the owner.
 
-Delivered (roadmap SHOULD #2, #4, #5, #6, #7, plus `ci.changed` and `agent.config_changed`):
-- **Test-tamper signals:** `tests.deleted`, `tests.skip_added` and `tests.discovery_narrowed` taint
-  test gates, so their results are UNKNOWN.
-- **CI:** `.github/workflows/ci.yml` runs pytest on 3.11–3.13, ruff, the MCP extra job, and a PR
-  dogfood `done`. Actions are pinned by SHA and run with least privilege. The recipe is in
-  `docs/guides/ci.md`.
-- **Commands:** `init`, `doctor`, and the Claude Code hook `done --hook claude-code`
-  (SessionStart anchors BASE; Stop fails closed).
-- **MCP:** a stdio server as the `repomarshal[mcp]` extra (plan, done, explain; MCP 2026-07-28 with
-  2025-11-25 fallback).
-- **Review:** a fresh fail-open review found 10 paths. All are fixed, and the tests are in
-  `tests/review_v02/`.
+v0.3 scope (from the owner):
+- human override (waivers);
+- the Stop-hook loop fix;
+- the SkillSpector and Playwright adapters;
+- a field test on 5 real repositories;
+- a fresh fail-open review;
+- a PR to main, so the dogfood job runs on GitHub.
 
-Measured on 2026-10-13:
-- **Suite:** 830 passed, 14 skipped (13 SDK-only MCP tests, 1 root-only). With the SDK venv,
-  `tests/review_v02`, the MCP tests and the contract tests give 88 passed. Ruff is clean.
-- **`plan` cold start:** median 181–184 ms, max 228 ms (v0.1: 179–188 ms). The MCP extra adds
-  nothing to `plan`.
-- **Demo verdicts unchanged:** A PASS, B PASS, C UNKNOWN.
+| Agent | Branch | Scope | Owns | Status |
+|---|---|---|---|---|
+| override | `v03/override` | waivers: `repomarshal waive`, GitHub label/review waivers in CI, dogfood job wiring | `src/repomarshal/waivers.py`, `tests/unit/test_waivers.py`, `.github/workflows/ci.yml`, `docs/guides/ci.md`, `docs/guides/waivers.md` | in progress |
+| hook-loop | `v03/hook-loop` | allow a stop on a repeated, unchanged non-PASS (with `systemMessage` UNVERIFIED); never on a new or worse verdict | `src/repomarshal/hooks.py`, `tests/unit/test_hooks.py`, `tests/unit/test_hook_loop.py` | in progress |
+| adapters | `v03/adapters` | SkillSpector (`skill_audit`) and Playwright (`runtime`) providers, plus the `agent.skill_changed` signal | `src/repomarshal/providers/**`, `tests/unit/test_provider_*.py`, the `agent.skill_changed` rule in `signals.py` | in progress |
+| field-test | `v03/field-test` | `plan` / `done --dry-run` on 5 real repositories; findings as fixtures plus failing tests | `docs/evaluation.md`, `tests/field/**`, `tests/fixtures/field/**` | in progress |
 
-Local branches: `claude/v0.2` only, plus the old `claude/phase1-research` and `claude/v0.1-slice`.
-All v0.2 agent worktrees and branches are removed. Remote branches are left to the owner.
+Contract (committed):
+- `model.Waiver` / `WaiverSource`, `EvidenceRecord.waivers`, `GateResult.tool` and
+  `PolicyRef.waivers_permit_pass`, with schemas updated;
+- `verdict.fold(..., waivers)`: only UNKNOWN or UNAVAILABLE decisions are waivable, never FAIL,
+  and only with the BASE policy permitting;
+- `api.done(waivers="none"|"local"|"github")` (the hook and MCP use "none");
+- `repomarshal waive` and `done --waivers` in the CLI;
+- the `providers` package (`discover` / `run`), wired into the inventory and the runner;
+- `repomarshal.toml` for this repo (`waivers_permit_pass = true`). It is effective only once
+  merged, because policy is read from BASE.
 
 ## Next step
 
-The owner verifies and merges `claude/v0.2`. Then, in roadmap SHOULD order: the remaining
-catalogue signals (`agent.skill_changed`, `dependency.changed`, `db.migration`), the SkillSpector
-and Playwright adapters, more inventory sources, the evidence hash chain with `status`, waivers,
-and publishing to PyPI.
-
-Repository settings for the owner, which can't be done from here:
-- make `ci / dogfood` a required check;
-- add CODEOWNERS for `.github/workflows/`.
+Launch the four agents in worktrees `/home/user/wt-<agent>` on branches `v03/<agent>`, then
+integrate one branch at a time and fix the field-test findings. Then run a fresh fail-open
+reviewer on the waivers, the hook loop and the adapters, and open the PR `claude/v0.3` → `main`
+with `gh pr create`. Report the dogfood job result.
 
 ## Upstream repos inspected
 

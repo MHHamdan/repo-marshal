@@ -84,6 +84,12 @@
           "items": {
             "type": "string"
           }
+        },
+        "tool": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -96,8 +102,55 @@
         "duration_ms",
         "stdout_sha256",
         "stderr_sha256",
-        "output_tail"
+        "output_tail",
+        "tool"
       ]
+    },
+    "waiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "reason",
+        "identity",
+        "source",
+        "granted_at",
+        "reference",
+        "tree_digest"
+      ],
+      "properties": {
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "enum": [
+            "github-label",
+            "github-review",
+            "local-cli"
+          ]
+        },
+        "granted_at": {
+          "type": "string"
+        },
+        "reference": {
+          "type": "string"
+        },
+        "tree_digest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
     }
   },
   "type": "object",
@@ -170,6 +223,12 @@
     },
     "advisory": {
       "type": "string"
+    },
+    "waivers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/waiver"
+      }
     }
   },
   "required": [
@@ -186,6 +245,7 @@
     "verdict_reasons",
     "repomarshal_version",
     "created_at",
-    "advisory"
+    "advisory",
+    "waivers"
   ]
 }

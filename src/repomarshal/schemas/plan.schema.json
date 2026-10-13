@@ -475,11 +475,15 @@
         "digest": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "waivers_permit_pass": {
+          "type": "boolean"
         }
       },
       "required": [
         "source",
-        "digest"
+        "digest",
+        "waivers_permit_pass"
       ]
     },
     "generator": {
