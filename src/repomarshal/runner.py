@@ -133,6 +133,9 @@ def _run(repo: Path, gate: Gate, change: ChangeSet, env: Mapping[str, str] | Non
             argv=gate.argv,
         )
     run_env = dict(os.environ if env is None else env)
+    # A file the change adds in the gate's cwd (e.g. backend/pytest.py) must not shadow the tool
+    # that `python -m <tool>` is meant to run (fail-open review #5).
+    run_env["PYTHONSAFEPATH"] = "1"
     start = time.monotonic()
     try:
         proc = subprocess.Popen(  # noqa: S603 - argv list, shell=False by design (ADR-002)

@@ -41,6 +41,11 @@ Done:
 
 ## Next step
 
+Lead fixes #1, #2, #3 and #5 are committed: 5 of the 22 failopen tests are green, with BASE
+anchoring in `src/repomarshal/anchor.py`. Known red until fix/git merges: the guard
+`test_exclude_everything_cannot_hide_tracked_edits` (an ignored `.repomarshal/` breaks `git add`;
+the fix is assigned to fix-git).
+
 The fail-open review is merged. `pytest -m failopen` shows 22 tests that must turn green. The fixes
 are split up as follows:
 - **Three fix agents** work on the branches in the table: git ignore rules, embedded repos and

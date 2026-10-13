@@ -6,6 +6,7 @@ Precedence BLOCKED > FAIL > UNKNOWN > PASS (BLOCKED is decided by the caller bef
 - SKIPPED / NOT_APPLICABLE never count, in either direction.
 - No REQUIRED and no UNAVAILABLE decision -> UNKNOWN ("nothing was verified").
 - Tree changed during the run -> at least UNKNOWN.
+- Any ChangeSet.opaque path (content RepoMarshal could not inspect) -> at least UNKNOWN.
 - WAIVED counts as PASS only when the policy permits; otherwise UNKNOWN.
 Fail closed: anything unrecognised is UNKNOWN, never PASS.
 """
@@ -49,6 +50,8 @@ def fold(
             unknowns.append(f"{label}: waived, and policy does not let waivers count as PASS")
         else:
             unknowns.append(f"{label}: UNKNOWN ({r.reason})")
+    for path in plan.change.opaque:
+        unknowns.append(f"content not inspectable: {path}")
     if tree_changed:
         unknowns.append(
             "working tree changed during verification; evidence does not match one tree"
