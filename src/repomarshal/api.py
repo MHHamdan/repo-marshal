@@ -93,7 +93,7 @@ def done(
 ) -> DoneResult:
     root = git.repo_root(repo)
     base_sha, base_how = anchor.effective_base(root, base)
-    before = git.tree_digest(root)
+    before = git.tree_digest(root, base=base_sha)
     try:
         p = planner.compile_plan(root, task=task, base=base_sha, path_env=_path_env(env))
     except PolicyInvalid as e:
@@ -159,7 +159,7 @@ def done(
         result = runner.run_gate(root, gate, p.change, env)
         # Fail-open review #3: check the tree after EVERY gate. A gate that swaps files for later
         # gates (and a final gate that restores them) would otherwise go unnoticed.
-        now = git.tree_digest(root)
+        now = git.tree_digest(root, base=base_sha)
         if now != before:
             tree_changed = True
             result = dataclasses.replace(
@@ -169,7 +169,7 @@ def done(
                 f"was: {result.status.value} ({result.reason})",
             )
         results.append(result)
-    after = git.tree_digest(root)
+    after = git.tree_digest(root, base=base_sha)
     tree_changed = tree_changed or before != after
     v, reasons = verdict.fold(p, tuple(results), tree_changed)
     return _record(root, p, results, before, after, v, reasons)

@@ -4,12 +4,22 @@ _Last updated: 2026-10-13_
 
 ## Current phase
 
-**Phase 6 (the vertical slice, MISSION.md §67) is in progress** on branch `claude/v0.1-slice`,
-which was branched from `origin/main` at 8a5f995. Phases 1–5 are merged to main. The scope change
-from the owner: M14 (`gates.definition_changed` → UNKNOWN) is now v0.1 MUST.
+**Phase 6 (vertical slice) and the Step 4 adversarial review are complete** on branch
+`claude/v0.1-slice`. The v0.1 exit criteria are met, and the branch is waiting for the owner to merge
+it to main. Phases 7 (integrations), 8 (evidence hardening), 9 (hostile self-review) and 10 (run
+everything) come next.
 
-Working model: the lead owns the contract and integration, and five agents work in parallel, each
-in its own git worktree with its own branch.
+**v0.1 exit criteria, measured on 2026-10-13:**
+- **Tests:** `.venv/bin/python -m pytest -o addopts="" -q` gives 481 passed, 1 skipped. The skip
+  needs an unreadable file, which root cannot create. All 22 `failopen` review tests are green.
+  `ruff check` and `ruff format --check` are clean.
+- **Cold start:** the installed `repomarshal plan --json` on the three demo fixtures, 40 runs each:
+  median 179–188 ms, worst run 233 ms, against the 300 ms target. A plan makes 31 git calls.
+- **README:** the demo table and the Scenario C `done` output come from real runs (A PASS, B PASS,
+  C UNKNOWN). They were re-verified after the fail-open fixes.
+
+Agent and fix branches. All are merged and local only; the worktrees under `/home/user/wt-*` can be
+removed.
 
 | Agent | Branch | Items | Owns | Status |
 |---|---|---|---|---|
@@ -18,7 +28,7 @@ in its own git worktree with its own branch.
 | planner | `slice/planner` | M5, M6, M7 | `signals.py`, `decisions.py`, `native.py` (run_* only), `tests/unit/test_signals.py`, `test_decisions.py`, `test_native.py` | **merged** |
 | context | `slice/context` | M8, M9 | `context.py`, `skills.py`, `tests/unit/test_context.py`, `test_skills.py` | **merged** |
 | review | `slice/review` | Step 4 | `tests/review/**` only (fail-open hunt) | **merged**: 11 confirmed fail-open paths, 22 red `failopen` tests |
-| fix-git | `fix/git` | review #6, #7, #8 | `git.py`, `tests/unit/test_git.py` | in progress |
+| fix-git | `fix/git` | review #6, #7, #8 | `git.py`, `tests/unit/test_git.py` | **merged** |
 | fix-signals | `fix/signals` | review #8, #9, #10 | `signals.py`, `tests/unit/test_signals.py` | **merged** |
 | fix-inventory | `fix/inventory` | review #4, #11 | `inventory.py`, `tests/unit/test_inventory.py` | **merged** |
 | fixture | `slice/fixture` | M13 | `tests/fixtures/**`, `tests/acceptance/**` | **merged** |
@@ -41,27 +51,16 @@ Done:
 
 ## Next step
 
-Lead fixes #1, #2, #3 and #5 are committed: 5 of the 22 failopen tests are green, with BASE
-anchoring in `src/repomarshal/anchor.py`. Known red until fix/git merges: the guard
-`test_exclude_everything_cannot_hide_tracked_edits` (an ignored `.repomarshal/` breaks `git add`;
-the fix is assigned to fix-git).
+The owner merges `claude/v0.1-slice` to main. Then, in roadmap SHOULD order:
+1. test-tamper signals (`tests.deleted`, `tests.skip_added`, `tests.discovery_narrowed`);
+2. the remaining catalogue signals;
+3. a CI workflow for this repo plus the user-facing CI recipe;
+4. `init` / `doctor`;
+5. the Claude Code Stop-hook shim;
+6. the MCP server;
+7. the SkillSpector and Playwright adapters.
 
-The fail-open review is merged. `pytest -m failopen` shows 22 tests that must turn green. The fixes
-are split up as follows:
-- **Three fix agents** work on the branches in the table: git ignore rules, embedded repos and
-  `--text` diffs; signals for renames, docs classification and hidden lines; inventory for tool
-  configs, delegated files and root-scope ids.
-- **The lead** fixes:
-  - #1: an empty change is UNKNOWN;
-  - #2: BASE is remembered in `.repomarshal/state/base.json` and combined with the automatic BASE
-    via merge-base, so a moved ref can only widen the diff;
-  - #3: the tree digest is checked after every gate;
-  - #5: `PYTHONSAFEPATH=1` for gates;
-  - #11: duplicate gate ids fail closed;
-  - `ChangeSet.opaque` forces UNKNOWN.
-
-The suite must then be fully green, with `-m failopen` included, before the owner is told the exit
-criteria pass.
+Also open: threat-model T19 (agent-configured git filters).
 
 ## Upstream repos inspected
 

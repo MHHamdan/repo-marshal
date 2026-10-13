@@ -1020,3 +1020,19 @@ def test_large_binary_is_streamed(committed: GitRepo) -> None:
     committed.write("big.bin", b"\0" + os.urandom(3 * 1024 * 1024))
     f = by_path(changes(committed))["big.bin"]
     assert f.binary is True and f.added == ()
+
+
+def test_self_ignoring_tool_caches_are_not_hidden_changes(tmp_path):
+    """ruff/pytest caches carry their own `.gitignore` ("*"); they must not become changes, while
+    a self-ignoring directory with any other name still does (fail closed)."""
+    r = GitRepo(tmp_path / "r")
+    r.write("app.py", "x = 1\n")
+    base = r.commit("base")
+    for cache in (".ruff_cache", "pkg/.pytest_cache", "pkg/__pycache__"):
+        r.write(f"{cache}/.gitignore", "*\n")
+        r.write(f"{cache}/data.bin", b"\x00cache")
+    r.write("sneaky/.gitignore", "*\n")
+    r.write("sneaky/auth.py", "def login():\n    return True\n")
+    paths = git.collect_changes(r.root, base).paths
+    assert not any(c in p for p in paths for c in (".ruff_cache", ".pytest_cache", "__pycache__"))
+    assert "sneaky/auth.py" in paths

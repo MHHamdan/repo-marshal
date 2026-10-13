@@ -128,7 +128,11 @@ Details: [`docs/architecture.md`](docs/architecture.md), [`docs/adr/`](docs/adr/
   repository code. `done` runs the repository's own commands, just like running its tests yourself.
 - **Test quality is not measured.** RepoMarshal proves which commands ran against which exact
   content, and how they exited. It does not prove that the tests are meaningful.
-- **Not covered by the digest:** ignored files such as `.env` and build output.
+- **Not covered by the digest:** files ignored by the BASE commit's `.gitignore`, such as `.env` and
+  build output. Ignore rules the agent controls (`.git/info/exclude`, global excludes, or a
+  `.gitignore` edited in the change) are not trusted.
+- **A gate's evidence is checked file by file:** the working tree is re-digested after every gate,
+  and a gate that changes files gets an UNKNOWN result.
 
 See [`docs/security/threat-model.md`](docs/security/threat-model.md).
 

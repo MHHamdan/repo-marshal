@@ -317,6 +317,17 @@ remove tmp
 ```
 
 This covers the content, exec bits and symlink targets of every non-ignored file.
+
+**Only BASE's `.gitignore` files are trusted** (fail-open review #6). An untracked file that the
+agent-controllable rules ignore (`.git/info/exclude`, `core.excludesFile`, or a `.gitignore` edited
+in the change) but BASE's rules don't is force-added. It becomes part of the digest and the change
+set.
+- **Cap:** above 500 such files, they go into `ChangeSet.opaque` instead, which forces UNKNOWN.
+- **Embedded git repositories:** these are opaque too.
+- **Tool caches:** directories that ignore themselves are skipped (`.ruff_cache`, `.pytest_cache`,
+  `.mypy_cache`, `.pytype`, `__pycache__`, `.hypothesis`). `node_modules` is not skipped.
+- **Line diffs:** these use `--text --no-textconv --no-ext-diff`, so git attributes cannot hide added
+  lines. Binary status is decided by content.
 `.repomarshal/` is excluded, so writing evidence never invalidates itself. The blobs it writes are
 harmless loose objects that `git gc` removes, and the user's index and refs are untouched.
 Limitations: ignored files (build outputs, `.env`) are not covered, and a dirty submodule is covered
@@ -331,8 +342,10 @@ only as its recorded gitlink.
   2. Compile the binding plan.
   3. Run the gates.
   4. Compute `tree_digest_after`.
-- **Tree changed during the run:** if the two digests differ (a formatter rewrote files, or the agent
-  kept editing), the verdict is **UNKNOWN**, with reason "working tree changed during verification".
+- **Tree changed during the run:** the digest is also recomputed **after every gate** (fail-open
+  review #3). A gate that modifies the tree, for example by swapping a file for later gates, gets an
+  UNKNOWN result. If the digests differ at any point (a formatter rewrote files, or the agent kept
+  editing), the verdict is **UNKNOWN**, with reason "working tree changed during verification".
 - **Validity later:** a verdict is valid only while the current tree digest equals `tree_digest_after`.
   `repomarshal status` (later) recomputes it and reports a mismatch as **STALE**, which counts as no
   evidence. Any edit, commit of different content, or new untracked file invalidates the verdict.
@@ -379,7 +392,10 @@ makes sure local files are never the source of truth for a verdict:
    4. `main` or `master`.
 
    An agent that commits directly to the base branch can shift BASE, so every evidence record states
-   the BASE it used.
+   the BASE it used. The first BASE seen per branch is also remembered in
+   `.repomarshal/state/base.json`. Later automatic resolutions take the merge-base of the
+   remembered and the automatic BASE, so moving a ref can only widen the diff (fail-open review #2).
+   Deleting the state only restores plain automatic resolution. An explicit `--base` always wins.
 4. **The authoritative anchor is a party the agent does not control.** CI, or a reviewer's machine,
    re-runs `repomarshal done` from scratch on the pushed commit and compares verdicts. A local PASS
    is advisory for the inner loop. This is written in the README and in every `done` output footer.

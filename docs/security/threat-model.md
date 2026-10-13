@@ -52,6 +52,30 @@ that exist in code, or that are scheduled as v0.1 MUST/SHOULD in the roadmap.
 | T16 | **Supply chain of RepoMarshal itself** | 1 | 3 | 3 | Zero runtime dependencies. Dev dependencies pinned. CI with pinned actions and least-privilege permissions | Release provenance (trusted publishing) |
 | T17 | **Compromised or misbehaving provider tool** | 1 | 3 | 3 | Providers are user-installed and run as subprocesses. Version and digests are recorded. Out-of-range versions give UNKNOWN | — |
 
+### Found by the v0.1 adversarial review (all fixed, each with a regression test in `tests/review/`)
+
+1. An empty change plus a docs task passed: now UNKNOWN.
+2. Fast-forwarding local `main` hid committed work: BASE is now remembered.
+3. A gate swapped files for later gates: the digest is now checked after every gate.
+4. Edits to tool config (`.pytest.ini`, `conftest.py`, nested `ruff.toml`, eslint, tsconfig, `.npmrc`)
+   or to scripts a gate runs were not definition changes: they now count (M14).
+5. `backend/pytest.py` shadowed `python -m pytest`: gates now run with `PYTHONSAFEPATH=1`.
+6. Agent-controlled ignore rules hid new files: only BASE `.gitignore` files are trusted now.
+7. An embedded git repository hid its content: it is now opaque, so UNKNOWN.
+8. `-diff` attributes or the 2000-line cap hid added lines: diffs use `--text`, and hidden lines
+   require the secrets gate.
+9. A rename out of a scope skipped the source scope: both paths are now classified.
+10. Non-doc files under `docs/`, and `.mdx`, were treated as docs only: they are now classified
+    properly.
+11. A `root/` scope collided with the root gate ids: the ids are now distinct, and duplicates fail
+    closed.
+
+| # | Remaining threat | L | I | Note |
+|---|---|---|---|---|
+| T18 | Code placed in a self-ignoring tool-cache directory (`.pytest_cache/` and others) | 1 | 2 | Only reachable through a visible change, such as a `sys.path` edit |
+| T19 | Git clean/smudge filters or a submodule with `ignore=all`, configured by the agent, altering what `git add` records | 1 | 3 | Not handled in v0.1. CI re-run is the anchor |
+| T20 | The agent deletes `.repomarshal/state/base.json` *and* moves refs before the first `done` | 1 | 3 | Falls back to automatic BASE. CI with an explicit BASE is the anchor |
+
 ## Residual risks that must be stated in the README
 
 1. **A local PASS is advisory.** A same-user agent can, with deliberate effort, defeat any local

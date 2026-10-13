@@ -75,7 +75,13 @@ class Webapp:
         self.sysbin = base_dir / "sysbin"
         self.markers = base_dir / "markers"
         self.markers.mkdir(parents=True)
-        shutil.copytree(TEMPLATE, self.root, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        shutil.copytree(
+            TEMPLATE,
+            self.root,
+            ignore=shutil.ignore_patterns(
+                "__pycache__", "*.pyc", ".ruff_cache", ".pytest_cache", ".mypy_cache"
+            ),
+        )
         self.repo = GitRepo(self.root)
         if policy is not None:
             self.repo.write("repomarshal.toml", policy)

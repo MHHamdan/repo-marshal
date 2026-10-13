@@ -10,6 +10,7 @@ Rules:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -94,6 +95,20 @@ def _decode_path(raw: bytes) -> str:
 
 def _is_evidence_path(path: str) -> bool:
     return path == EVIDENCE_DIR or path.startswith(EVIDENCE_DIR + "/")
+
+
+# Tool caches that write their own `.gitignore` ("*") into the working tree. Files under them are
+# never treated as hidden changes even when BASE does not ignore them; otherwise every ruff or
+# pytest run would make the next plan noisy. Code executed from these directories would have to
+# be wired in by a visible change (residual risk, threat model T18). node_modules is deliberately
+# NOT listed: its contents are importable, so hiding it stays fail-closed.
+TOOL_CACHE_DIRS = frozenset(
+    {".ruff_cache", ".pytest_cache", ".mypy_cache", ".pytype", "__pycache__", ".hypothesis"}
+)
+
+
+def _is_tool_cache(path: str) -> bool:
+    return any(seg in TOOL_CACHE_DIRS for seg in path.rstrip("/").split("/"))
 
 
 def repo_root(path: str | Path) -> Path:
@@ -363,7 +378,9 @@ def _ignored_others(root: Path, env: dict[str, str], *args: str) -> list[str]:
         env=env,
         text=False,
     ).stdout
-    return [p for p in _nul_split(out) if not _is_evidence_path(p.rstrip("/"))]
+    return [
+        p for p in _nul_split(out) if not _is_evidence_path(p.rstrip("/")) and not _is_tool_cache(p)
+    ]
 
 
 def _add_untrusted_ignored(
@@ -715,12 +732,39 @@ def collect_changes(repo: Path, base: str | None) -> ChangeSet:
     )
 
 
+_FULL_SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+# Commit content is immutable, so reads at a full sha are cached for the life of the process.
+_TREE_CACHE: dict[tuple[str, str], frozenset[str]] = {}
+_BLOB_CACHE: dict[tuple[str, str, str], bytes | None] = {}
+
+
+def _tree_set(repo: Path, rev: str) -> frozenset[str]:
+    key = (str(Path(repo).resolve()), rev)
+    cached = _TREE_CACHE.get(key)
+    if cached is None:
+        out = _git(repo, "ls-tree", "-r", "-z", "--name-only", rev, text=False).stdout
+        cached = frozenset(p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p)
+        if _FULL_SHA.fullmatch(rev):
+            _TREE_CACHE[key] = cached
+    return cached
+
+
 def read_at(repo: Path, rev: str | None, path: str) -> bytes | None:
     """Content of `path` at commit `rev` (`git show rev:path`), or None if the path does not exist
     there. rev None means "no base" and always returns None. Never reads the working tree.
     """
     if rev is None:
         return None
+    if _FULL_SHA.fullmatch(rev):
+        key = (str(Path(repo).resolve()), rev, path)
+        if key in _BLOB_CACHE:
+            return _BLOB_CACHE[key]
+        if path not in _tree_set(repo, rev):  # one ls-tree per commit instead of one call per path
+            _BLOB_CACHE[key] = None
+            return None
+        r = _git(repo, "cat-file", "blob", f"{rev}:{path}", text=False, check=False)
+        _BLOB_CACHE[key] = r.stdout if r.returncode == 0 else None
+        return _BLOB_CACHE[key]
     r = _git(repo, "cat-file", "-e", f"{rev}:{path}", check=False)
     if r.returncode != 0:
         return None
@@ -731,8 +775,7 @@ def list_files_at(repo: Path, rev: str | None) -> tuple[str, ...]:
     """All file paths in the tree of `rev` (sorted). rev None returns ()."""
     if rev is None:
         return ()
-    out = _git(repo, "ls-tree", "-r", "-z", "--name-only", rev, text=False).stdout
-    return tuple(sorted(p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p))
+    return tuple(sorted(_tree_set(repo, rev)))
 
 
 def read_worktree(repo: Path, path: str) -> bytes | None:
