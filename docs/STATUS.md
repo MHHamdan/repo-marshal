@@ -4,7 +4,7 @@ _Last updated: 2026-10-13_
 
 ## Current phase
 
-**Phase 3 (Architecture) is complete. Phase 4 (Threat Model, MISSION.md §65) is next.** The owner asked for Phases 3, 4 and 5
+**Phases 3 (Architecture) and 4 (Threat Model) are complete. Phase 5 (MVP Decision, MISSION.md §66) is next.** The owner asked for Phases 3, 4 and 5
 together, then the start of Phase 6. Phases 1–2 are complete: see `docs/research/`,
 `docs/product-definition.md` and `LICENSE` (Apache-2.0).
 
@@ -17,18 +17,18 @@ Done in Phase 3:
   account for most of it.
 - `docs/adr/002`–`005`: provider integration, agent interoperability, evidence model, change planner.
   **Phase 3 is complete.**
+- `docs/security/threat-model.md`: 17 threats ranked by likelihood × impact, with the coding agent
+  as the main adversary, and v0.1 mitigations separated from later ones. **Phase 4 is complete.**
 
 ## Next step
 
-Write `docs/security/threat-model.md` (Phase 4), short and prioritised:
-- the coding agent itself is the main adversary: edits tests, deletes tests, edits policy, CI or
-  hooks, forges evidence, argues gates away in the task text;
-- also prompt injection from repository content, and malicious skills;
-- rank by likelihood × impact;
-- separate the v0.1 mitigations (architecture §7) from later ones.
+Write `docs/roadmap.md` (Phase 5) with MUST / SHOULD / MAY / NOT NOW.
+- MUST is only what the MISSION.md §42 demo needs end to end: `plan` and `done` on a fixture repo,
+  covering Scenarios A (docs), B (frontend) and C (auth).
+- The SHOULD order comes from the end of the threat model: `gates.definition_changed`, test-tamper
+  signals, the CI recipe, the SkillSpector adapter, AgentProof.
 
-Then `docs/roadmap.md` (Phase 5): v0.1 MUST is only what the MISSION.md §42 demo needs end to end.
-Then the Phase 6 slice.
+Then tell the owner that Phase 5 is done, so they can merge to main, and start Phase 6.
 
 ## Upstream repos inspected
 

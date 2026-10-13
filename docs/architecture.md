@@ -370,8 +370,8 @@ makes sure local files are never the source of truth for a verdict:
    evaluation. Those edits raise `policy.self_modified`, `build.config_changed`,
    `agent.config_changed` or `ci.changed`, which elevate risk and widen the plan.
    - **Residual gap:** `npm run test` resolves the script body from the *working-tree* package.json
-     at run time. v0.1 detects the edit (signal) but does not execute the BASE script body. This is
-     listed in the threat model.
+     at run time. v0.1 detects the edit (`build.config_changed`). The planned
+     `gates.definition_changed` rule makes such a gate's result UNKNOWN (threat model T3).
 3. **BASE resolution is recorded, not trusted.** The default order is:
    1. `--base`;
    2. merge-base with `origin/HEAD`;

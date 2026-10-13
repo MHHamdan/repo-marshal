@@ -1,0 +1,74 @@
+# Threat model
+
+_Phase 4 (MISSION.md §65). The mechanisms are specified in [`../architecture.md`](../architecture.md)
+§5–§7 and [`../adr/004-evidence-model.md`](../adr/004-evidence-model.md)._
+
+## What RepoMarshal is and is not
+
+| Control type | RepoMarshal? |
+|---|---|
+| **Detection** | Yes: deterministic change signals flag risky edits (tests, policy, CI, agent config, auth, secrets) |
+| **Verification** | Yes: it re-executes the required gates against an exact tree digest and returns a fail-closed verdict |
+| **Enforcement** | Only at one point: a host stop hook can refuse a completion claim. RepoMarshal does not intercept tool calls (AgentWard, Preloop and host permissions do that) |
+| **Sandboxing** | **No.** Gates run as the user, in the user's environment. RepoMarshal never claims isolation |
+
+## Adversaries and assets
+
+- **Primary adversary: the coding agent.** It is not necessarily malicious. It is optimising to
+  report success, whether through reward hacking, sycophancy or a prompt injection. It runs as the
+  same OS user, so it can edit any file, run any command, and call RepoMarshal itself.
+- **Secondary adversaries:**
+  - malicious repository content: docs, issues or test fixtures that inject instructions;
+  - malicious skills or MCP configs;
+  - compromised dependencies, of the repository or of RepoMarshal.
+- **Assets:**
+  - the truthfulness of the verdict (the main one);
+  - the integrity of policy and gate definitions;
+  - secrets in the environment and in output;
+  - the user's trust in a PASS.
+
+## Ranked threats
+
+L = likelihood and I = impact, each scored 1–3. Rank = L × I. The table lists only the v0.1 mitigations
+that exist in code, or that are scheduled as v0.1 MUST/SHOULD in the roadmap.
+
+| # | Threat | L | I | Rank | v0.1 mitigation | Later |
+|---|---|---|---|---|---|---|
+| T1 | **Agent weakens tests** (loosened assertions, mocks that make code trivial) so gates pass | 3 | 3 | 9 | Partial. `tests.changed` puts tests in context and in the evidence record. There is no detection of assertion weakening | AgentProof provider (base/head differential, AP005 assertion weakening); `review` gate |
+| T2 | **Agent deletes tests, adds skips, or narrows test discovery** | 3 | 3 | 9 | `tests.deleted` (deleted files, removed `def test_`/`it(`) is elevated and widens the plan. Discovery config edits fire `build.config_changed` and widen the plan | `tests.skip_added` / `tests.discovery_narrowed` signals (SHOULD); AgentProof |
+| T3 | **Agent edits a gate's definition** (e.g. `"test": "exit 0"` in package.json, a Makefile target, a pyproject tool section) so the gate trivially passes | 2 | 3 | 6 | The inventory is read at BASE, and the edit fires `build.config_changed`. **Gap:** `npm run test` executes the *working-tree* script body | **`gates.definition_changed`** (SHOULD, priority 1): if a gate's definition differs between BASE and the worktree, its result is UNKNOWN, "re-verify where the definition is trusted" |
+| T4 | **Agent edits `repomarshal.toml`, CI workflows or hooks** to weaken or skip checks | 2 | 3 | 6 | Policy is read from BASE only. `policy.self_modified`, `ci.changed` and `agent.config_changed` elevate risk and widen the plan | CI re-runs `done` with the BASE workflow; host-managed (non-repo) hook settings documented |
+| T5 | **Agent forges evidence or results** in `.repomarshal/` | 2 | 3 | 6 | Evidence is never a verdict input. There is no cache. A verdict comes only from the same invocation's execution. `record_digest` catches casual edits | Hash chain (SHOULD); HMAC'd cache with key outside the repo; CI as anchor |
+| T6 | **Stale evidence**: a verdict reused after the code changed, or edits during the gate run | 2 | 3 | 6 | A tree digest (temporary index + `add -A`) is taken before and after. A mismatch makes the verdict UNKNOWN. Verdicts are bound to plan, policy and base | `status` reports STALE (SHOULD) |
+| T7 | **Agent disables the stop hook**, so `done` never runs | 2 | 3 | 6 | `agent.config_changed` is elevated (visible when `done` runs). Otherwise there is no local defence | Documented: put hooks in host-managed settings, and run `done` in CI |
+| T8 | **Task text argues gates away** ("trivial docs fix, skip tests") | 3 | 2 | 6 | By construction, task text can only add signals. Gates are decided from the diff | n/a (structural) |
+| T9 | **Malicious skill**, added in the diff or recommended | 2 | 3 | 6 | Skills come only from the repo at BASE. A skill changed in the diff is never recommended and fires `agent.skill_changed`, so `skill_audit` is required. Without a scanner the verdict is UNKNOWN | SkillSpector adapter (SHOULD). Even then, scanner bypasses are documented (CSA, 2026-06), so a pass is evidence, not proof |
+| T10 | **Prompt injection from repository content** steering the agent via context RepoMarshal recommends | 2 | 2 | 4 | The plan contains **paths and reasons only, never file contents**. Repo content can influence decisions only through add-only deterministic signals. Paths are JSON-escaped | Optional content summaries stay excluded unless they are sanitised |
+| T11 | **Secrets in outputs** (gate logs, plan, evidence) | 2 | 2 | 4 | Only redacted 40-line tails are stored; streams are hashed. Patterns cover tokens, keys, `Authorization`, and URL passwords. The native `secrets:diff` gate flags added secrets | Provider-grade scanners (gitleaks) as an optional gate |
+| T12 | **BASE manipulation** (the agent commits to main locally, or moves refs) so policy comes from its own commit | 1 | 3 | 3 | BASE prefers `origin/*` refs. The base SHA is recorded in plan and evidence | CI derives BASE independently; warn when BASE is a local-only commit |
+| T13 | **Running `done` on an untrusted repository** executes its scripts | 1 | 3 | 3 | `plan` never executes repository code. `done --dry-run` lists the commands. Docs say `done` = running the repo's tests | — |
+| T14 | **Command injection** via config, paths or task text | 1 | 3 | 3 | Only argv lists, never `shell=True`. Config argv must be an array. Paths and task text are never interpolated into commands | — |
+| T15 | **Symlink or path traversal**: a changed symlink pointing outside the repo, or Markdown links to `../../etc` | 1 | 2 | 2 | Content comes from git objects, so a symlink yields only its target string. The docs-links check resolves paths inside the repo root and never reads outside it | — |
+| T16 | **Supply chain of RepoMarshal itself** | 1 | 3 | 3 | Zero runtime dependencies. Dev dependencies pinned. CI with pinned actions and least-privilege permissions | Release provenance (trusted publishing) |
+| T17 | **Compromised or misbehaving provider tool** | 1 | 3 | 3 | Providers are user-installed and run as subprocesses. Version and digests are recorded. Out-of-range versions give UNKNOWN | — |
+
+## Residual risks that must be stated in the README
+
+1. **A local PASS is advisory.** A same-user agent can, with deliberate effort, defeat any local
+   check, for example by editing the RepoMarshal installation itself. The authoritative verdict comes
+   from re-running `done` where the agent cannot write: CI or a reviewer's machine.
+2. **Test quality is not measured.** RepoMarshal proves which commands ran and how they exited, not
+   that the tests are meaningful (T1).
+3. **Ignored files** (`.env`, build outputs) are outside the tree digest.
+4. **Signal coverage is heuristic.** Unknown files widen the plan rather than shrink it, but a risky
+   change hidden in an innocuous-looking file can be under-classified. The gate floor (cheap and
+   standard gates always run in a changed scope) bounds the damage.
+
+## Priorities derived from this model
+
+These feed the roadmap SHOULD list, in this order:
+1. `gates.definition_changed` (T3)
+2. test-tamper signals (T2)
+3. the CI recipe for re-running `done` (T4, T5, T7)
+4. the SkillSpector adapter (T9)
+5. AgentProof integration (T1)
