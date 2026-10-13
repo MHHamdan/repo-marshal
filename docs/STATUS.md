@@ -17,6 +17,7 @@ in its own git worktree with its own branch.
 | inventory | `slice/inventory` | M3, M4, M14 | `inventory.py`, `policy.py`, `tests/unit/test_inventory.py`, `tests/unit/test_policy.py` | **merged** |
 | planner | `slice/planner` | M5, M6, M7 | `signals.py`, `decisions.py`, `native.py` (run_* only), `tests/unit/test_signals.py`, `test_decisions.py`, `test_native.py` | **merged** |
 | context | `slice/context` | M8, M9 | `context.py`, `skills.py`, `tests/unit/test_context.py`, `test_skills.py` | **merged** |
+| review | `slice/review` | Step 4 | `tests/review/**` only (fail-open hunt) | in progress |
 | fixture | `slice/fixture` | M13 | `tests/fixtures/**`, `tests/acceptance/**` | **merged** |
 
 The lead owns `model.py`, the schemas, `planner.py`, `runner.py`, `verdict.py`, `evidence.py`,
