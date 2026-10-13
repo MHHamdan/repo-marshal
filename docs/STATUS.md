@@ -4,38 +4,44 @@ _Last updated: 2026-10-13_
 
 ## Current phase
 
-**Phases 1–5 are complete. Phase 6 (the vertical slice, MISSION.md §67) is next.** The owner asked for Phases 3, 4 and 5
-together, then the start of Phase 6. Phases 1–2 are complete: see `docs/research/`,
-`docs/product-definition.md` and `LICENSE` (Apache-2.0).
+**Phase 6 (the vertical slice, MISSION.md §67) is in progress** on branch `claude/v0.1-slice`,
+which was branched from `origin/main` at 8a5f995. Phases 1–5 are merged to main. The scope change
+from the owner: M14 (`gates.definition_changed` → UNKNOWN) is now v0.1 MUST.
 
-Done in Phase 3:
-- `docs/adr/001-core-language.md`: Python ≥ 3.11, stdlib-only core, TOML config. Based on measured
-  cold starts: about 60 ms for stdlib, 190 ms with typer + pydantic, against a 300 ms budget.
-- `docs/architecture.md`: components, IR, gate inventory (§3), planning pseudo-code with the
-  Scenario C walkthrough (§4), tree digest and binding (§5), verdict (§6), tamper resistance (§7).
-  It is 433 lines, slightly over the roughly 400-line budget; the four required worked examples
-  account for most of it.
-- `docs/adr/002`–`005`: provider integration, agent interoperability, evidence model, change planner.
-  **Phase 3 is complete.**
-- `docs/security/threat-model.md`: 17 threats ranked by likelihood × impact, with the coding agent
-  as the main adversary, and v0.1 mitigations separated from later ones. **Phase 4 is complete.**
-- `docs/roadmap.md`: v0.1 MUST items M1–M13 (only what the §42 demo needs), then SHOULD / MAY /
-  NOT NOW. **Phase 5 is complete.**
+Working model: the lead owns the contract and integration, and five agents work in parallel, each
+in its own git worktree with its own branch.
+
+| Agent | Branch | Items | Owns | Status |
+|---|---|---|---|---|
+| git | `slice/git` | M1, M2 | `src/repomarshal/git.py`, `tests/unit/test_git.py` | not started |
+| inventory | `slice/inventory` | M3, M4, M14 | `inventory.py`, `policy.py`, `tests/unit/test_inventory.py`, `tests/unit/test_policy.py` | not started |
+| planner | `slice/planner` | M5, M6, M7 | `signals.py`, `decisions.py`, `native.py` (run_* only), `tests/unit/test_signals.py`, `test_decisions.py`, `test_native.py` | not started |
+| context | `slice/context` | M8, M9 | `context.py`, `skills.py`, `tests/unit/test_context.py`, `test_skills.py` | not started |
+| fixture | `slice/fixture` | M13 | `tests/fixtures/**`, `tests/acceptance/**` | not started |
+
+The lead owns `model.py`, the schemas, `planner.py`, `runner.py`, `verdict.py`, `evidence.py`,
+`api.py`, `cli.py` and `tests/helpers.py`.
+
+Done:
+- The contract is committed: `pyproject.toml` (stdlib-only core; dev deps pytest, jsonschema and
+  ruff), `src/repomarshal/model.py` (IR dataclasses), JSON Schemas (M12), interface stubs with the
+  behaviour spec in each docstring, `tests/helpers.py` and `tests/unit/test_contract.py`.
 
 ## Next step
 
-Phase 6: build roadmap items M1–M13 as the thinnest slice. Order:
-1. Scaffold: `pyproject.toml` (Python ≥ 3.11, zero runtime deps, dev deps pytest + jsonschema + ruff),
-   `src/repomarshal/`, console script `repomarshal`.
-2. `model.py` and `git.py` (M1, M2), with tests against temporary git repos.
-3. `inventory.py` and `policy.py` (M3, M4).
-4. `signals.py` and `planner.py` (M5, M6, M8, M9), with the `tests/fixtures/webapp` template plus
-   scenario tests A, B and C.
-5. `cli.py plan` (M10).
-6. `runner.py`, `verdict.py`, `evidence.py`, native gates and `done` (M7, M11).
-7. Schemas (M12) and the honesty tests (M13).
+Launch the five agents (Step 2). If resuming cold:
+1. `uv venv -p 3.11 .venv && uv pip install -p .venv/bin/python pytest jsonschema ruff`
+2. For each agent whose status above is not "merged", create its worktree:
+   `git worktree add ../wt-<agent> -b slice/<agent> claude/v0.1-slice`
+3. Give the agent its items, its ownership list and the relevant docs.
 
-Commit each module together with its tests, and push after each commit.
+Afterwards (Step 3):
+- merge the agent branches one at a time;
+- implement `planner.compile_plan`, `runner`, `verdict`, `evidence`, `api` and `cli` (M10, M11);
+- run `.venv/bin/python -m pytest` and `.venv/bin/ruff check src tests`;
+- measure `plan` cold start on the fixture.
+
+Then Step 4: a fresh reviewer agent hunts fail-open paths.
 
 ## Upstream repos inspected
 

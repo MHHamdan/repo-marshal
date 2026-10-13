@@ -23,6 +23,7 @@ threat model priorities.
 | M10 | `repomarshal plan [task] [--json] [--explain] [--base]`, in forecast and binding modes | A, B, C |
 | M11 | `repomarshal done [--json] [--dry-run]`: run REQUIRED command gates (argv, cwd, timeout), compare the before and after digests, write an evidence record, return a verdict with exit codes 0/1/2/3/4 | A, B, C |
 | M12 | JSON Schemas for the plan and evidence (`schema_version: "0.1"`), checked in tests | contract |
+| M14 | **`gates.definition_changed`** (promoted from SHOULD #1 by the owner, 2026-10-13): if a gate's definition differs between BASE and the working tree (package.json script body, Python tool config, `[gates.*]` table), the gate's result is UNKNOWN whatever its exit code. Without this, changing the test script to `exit 0` yields PASS (threat T3) | core promise |
 | M13 | The `webapp` fixture plus tests: the three scenario plans; a broken gate → FAIL; unavailable → UNKNOWN; no required gates → UNKNOWN; tree changed during the run → UNKNOWN; task text cannot remove gates; policy edits do not apply to the current plan | proof |
 
 **v0.1 exit criteria:**
@@ -32,24 +33,22 @@ threat model priorities.
 
 ## SHOULD: next, in priority order
 
-1. **`gates.definition_changed`.** If a gate's definition differs between BASE and the worktree, its
-   result is UNKNOWN (T3).
-2. **Test-tamper signals:** `tests.deleted`, `tests.skip_added`, `tests.discovery_narrowed` (T2).
-3. **Remaining catalogue signals:** `ci.changed`, `agent.config_changed`, `agent.skill_changed`,
+1. **Test-tamper signals:** `tests.deleted`, `tests.skip_added`, `tests.discovery_narrowed` (T2).
+2. **Remaining catalogue signals:** `ci.changed`, `agent.config_changed`, `agent.skill_changed`,
    `dependency.changed`, `db.migration`.
-4. **Repository CI:** lint, tests and the identity check with pinned actions. Plus a documented recipe
+3. **Repository CI:** lint, tests and the identity check with pinned actions. Plus a documented recipe
    for running `repomarshal done` in a user's CI as the authoritative anchor (T4, T5, T7).
-5. **`init` and `doctor`.**
-6. **Claude Code Stop-hook shim** (`done --hook claude-code`). Snippets for the other hosts are
+4. **`init` and `doctor`.**
+5. **Claude Code Stop-hook shim** (`done --hook claude-code`). Snippets for the other hosts are
    printed by `init --print`.
-7. **MCP stdio server** (`repomarshal[mcp]`): `plan`, `done`, `explain`.
-8. **SkillSpector adapter** for `skill_audit` (T9).
-9. **Playwright adapter** for `runtime` (JSON reporter; `expected == 0` → UNKNOWN).
-10. **Inventory from more sources:** `AGENTS.md ## Commands` and `Makefile` targets.
-11. **Evidence hash chain** (`prev_digest`) and a `status` command that reports STALE.
-12. **Waivers:** a recorded reason, governed by `completion.waivers_permit_pass`.
-13. **README** with real demo output and the honest boundaries from the threat model.
-14. **CI test for the startup budget.**
+6. **MCP stdio server** (`repomarshal[mcp]`): `plan`, `done`, `explain`.
+7. **SkillSpector adapter** for `skill_audit` (T9).
+8. **Playwright adapter** for `runtime` (JSON reporter; `expected == 0` → UNKNOWN).
+9. **Inventory from more sources:** `AGENTS.md ## Commands` and `Makefile` targets.
+10. **Evidence hash chain** (`prev_digest`) and a `status` command that reports STALE.
+11. **Waivers:** a recorded reason, governed by `completion.waivers_permit_pass`.
+12. **README** with real demo output and the honest boundaries from the threat model.
+13. **CI test for the startup budget.**
 
 ## MAY: after the core is proven
 

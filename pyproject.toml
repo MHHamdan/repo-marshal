@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "repomarshal"
+version = "0.1.0.dev0"
+description = "Compile each repository change into an explained plan of required checks, then return an evidence-backed completion verdict."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Mohammed Hamdan" }]
+dependencies = []  # ADR-001: the core is stdlib-only
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "jsonschema>=4.23", "ruff>=0.6"]
+
+[project.scripts]
+repomarshal = "repomarshal.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/repomarshal"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "BLE"]
+ignore = ["S101", "S603", "S607"]  # asserts in tests; subprocess with argv lists is the design (ADR-002)
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S"]
