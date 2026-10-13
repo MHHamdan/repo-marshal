@@ -11,20 +11,20 @@ together, then the start of Phase 6. Phases 1–2 are complete: see `docs/resear
 Done in Phase 3:
 - `docs/adr/001-core-language.md`: Python ≥ 3.11, stdlib-only core, TOML config. Based on measured
   cold starts: about 60 ms for stdlib, 190 ms with typer + pydantic, against a 300 ms budget.
+- `docs/architecture.md`: components, IR, gate inventory (§3), planning pseudo-code with the
+  Scenario C walkthrough (§4), tree digest and binding (§5), verdict (§6), tamper resistance (§7).
 
 ## Next step
 
-Write `docs/architecture.md`, at most about 400 lines. Mermaid only for the components and the data
-flow. It must include worked examples of:
-1. gate inventory on an unconfigured repo (package.json, pyproject, Makefile, CI hints, AGENTS.md;
-   cheap/standard/expensive cost classes, and measured durations that can only *promote* a gate);
-2. the deterministic planning pseudo-code, walking the auth fixture diff end to end;
-3. the tree digest for uncommitted work (temporary index + `git add -A` + `write-tree`, excluding
-   `.repomarshal/`);
-4. tamper resistance of `.repomarshal/`.
+Write ADRs 002–005 in `docs/adr/`, one screen each, in the format context / decision / alternatives /
+consequences:
+- 002 provider integration: subprocess adapters, status levels, version pinning, no stubs;
+- 003 agent interoperability: CLI JSON plus MCP stdio plus a Stop-hook shim; no config generation;
+- 004 evidence model: re-execution, tree digest, local evidence is advisory, CI is the anchor;
+- 005 change planner: signal catalogue, decision rules, widening, task text only adds.
 
-After that: ADRs 002–005, `docs/security/threat-model.md`, `docs/roadmap.md`, then the Phase 6 slice
-(`plan` and `done` on a fixture repo, with tests).
+All four summarise what `docs/architecture.md` already specifies. Then write
+`docs/security/threat-model.md` and `docs/roadmap.md`, then do Phase 6.
 
 ## Upstream repos inspected
 
