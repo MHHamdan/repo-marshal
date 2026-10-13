@@ -53,7 +53,8 @@ def plan_text(p: Plan, explain: bool = False) -> str:
     for d in p.gates:
         label = d.gate_id or f"{d.kind.value} (no gate)"
         out.append(f"  {label:<26} {d.kind.value:<14} {_STATUS_LABEL[d.status]}")
-        reasons = d.reasons if explain else d.reasons[:1]
+        # Without --explain show the trigger and, when different, the deciding (last) reason.
+        reasons = d.reasons if explain else tuple(dict.fromkeys((d.reasons[0], d.reasons[-1])))
         for r in reasons:
             cite = f" [{r.signal}]" if r.signal else ""
             out.append(f"      - {r.text}{cite}")

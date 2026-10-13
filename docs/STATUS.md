@@ -23,6 +23,11 @@ The lead owns `model.py`, the schemas, `planner.py`, `runner.py`, `verdict.py`, 
 `api.py`, `cli.py` and `tests/helpers.py`.
 
 Done:
+- **All five agent branches are merged.** The integration fixes: binding plans are compiled from the
+  diff alone (ADR-005), and stylesheets are exempt from `security.auth_path`.
+- Full suite: 364 passed, 1 skipped (root cannot create an unreadable file). Ruff check and format
+  are clean.
+- `README.md`, with the real demo output for Scenarios A, B and C (A PASS, B PASS, C UNKNOWN).
 - The lead's modules are committed with unit tests: `runner.py` and `verdict.py` (fail-closed),
   plus `planner.compile_plan`, `api.plan` / `api.done`, `evidence.py`, `cli.py` and `render.py`.
   They are wired to the agent modules, so they work end to end once those are merged.
@@ -32,19 +37,14 @@ Done:
 
 ## Next step
 
-Launch the five agents (Step 2). If resuming cold:
-1. `uv venv -p 3.11 .venv && uv pip install -p .venv/bin/python pytest jsonschema ruff`
-2. For each agent whose status above is not "merged", create its worktree:
-   `git worktree add ../wt-<agent> -b slice/<agent> claude/v0.1-slice`
-3. Give the agent its items, its ownership list and the relevant docs.
+Step 4: launch a fresh reviewer agent with no prior context. Its only task is to find fail-open
+paths (any agent edit, missing tool, crash or timeout that yields PASS) and add a test for each.
+Then fix what it finds, re-run the suite, and report the v0.1 exit criteria to the owner.
 
-Afterwards (Step 3):
-- merge the agent branches one at a time;
-- implement `planner.compile_plan`, `runner`, `verdict`, `evidence`, `api` and `cli` (M10, M11);
-- run `.venv/bin/python -m pytest` and `.venv/bin/ruff check src tests`;
-- measure `plan` cold start on the fixture.
-
-Then Step 4: a fresh reviewer agent hunts fail-open paths.
+Measured on 2026-10-13, with the installed console script on fixture copies (40 runs each):
+`repomarshal plan --json` median about 220 ms, p90 about 240 ms, max 273 ms, against the 300 ms
+target. A plan makes about 50 git subprocess calls (`cat-file -e` 24×). Batching them through
+`git cat-file --batch` is the obvious speed-up (follow-up, not v0.1).
 
 ## Upstream repos inspected
 
