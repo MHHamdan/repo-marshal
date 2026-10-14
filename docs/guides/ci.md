@@ -131,10 +131,11 @@ Notes:
 
 - The gates run the PR's code in the same job and can read `GITHUB_TOKEN`. That is why it must
   stay read-only: never add write scopes (or `pull_request_target`) to this job.
-- `pull_request_review` and label events re-run every job of the workflow, not just this one. Do
-  not skip the other jobs with `if:` on those events: a skipped job reports success, and it would
-  stand in for a failed or cancelled run of the same check on the same commit. This repository's
-  `ci.yml` accepts the extra runs for that reason.
+- Label events re-run every job of the workflow, not just this one. Do not skip the other jobs
+  with `if:` on those events: a skipped job reports success, and it would stand in for a failed or
+  cancelled run of the same check on the same commit. This repository's `ci.yml` accepts the extra
+  runs for that reason.
+- Post the reason comment **before** applying the label: a comment does not re-run the workflow.
 - Pass the base SHA through `env`, as above, rather than interpolating `${{ }}` into the script.
 
 ## 7. GitHub Actions example
@@ -193,6 +194,44 @@ jobs:
 RepoMarshal is not yet on PyPI, so install it from a pinned commit (or a wheel you build). Passing
 the SHA through `env` rather than interpolating `${{ }}` into the script is a habit worth keeping,
 even for a SHA.
+
+### Split verification (v0.4, recommended)
+
+The single job above runs the PR's code in the same job, as the same user, as the judge. Code
+that runs before or between gates can tamper with `.git`, the judge's files, or other gates'
+results (threat T26). `repomarshal ci` splits the work so PR code never runs where the judge reads
+or decides anything. This repository's own `ci.yml` dogfood jobs are the reference:
+
+| Job | Runs PR code | Permissions | Does |
+|---|---|---|---|
+| `rm-plan` | no | contents, pull-requests, issues: read | `repomarshal ci plan --base SHA --github-output`: the plan, a check that the checkout is the PR head (or GitHub's merge commit of it), the waivers for the record, and a matrix of the gates that run repository code |
+| `rm-gate-N` (matrix) | yes, one gate | **none** (`permissions: {}`) | `repomarshal ci gate --gate ID --expect ...`: runs that one gate on a fresh runner and uploads `result.json` as artifact `rm-gate-N`. Step names `run gate` and `upload result` are part of the contract |
+| `dogfood` | no | the above plus `actions: read` | `repomarshal ci verdict --expect ... --results DIR`: re-plans, re-reads the waivers, runs the native checks itself, binds each gate result and folds the verdict |
+
+A gate result counts only when it binds:
+- the verdict job's own plan hash, HEAD, tree digest and gate list equal the plan job's outputs;
+- the checkout is the PR head SHA, or a merge commit whose second parent is the PR head SHA;
+- the result file names the same gate, plan hash, HEAD and tree, and the gate did not change the
+  tree;
+- GitHub's record of the `rm-gate-N` job agrees, read through the Actions API: step `run gate`
+  succeeded exactly when the file says PASS, and step `upload result` succeeded.
+
+Otherwise the result is UNKNOWN. The last check exists because PR code can read the runner's
+artifact token, so a gate job could upload a forged file under another gate's name. It cannot
+change another job's step conclusions, so a forgery can at worst turn a real FAIL into UNKNOWN,
+never into PASS. A gate's report about itself remains only as good as the PR's code, as in any
+CI.
+
+Notes:
+- Every job installs the same tools: tool availability is part of the plan, and the plans must
+  match.
+- Checkout `ref: ${{ github.sha }}` in every job, so all jobs see the same commit.
+- On a private repository the gate jobs need `contents: read` to check out. That token is
+  read-only and can only see code the PR author can already read.
+- Re-running only failed jobs starts a new run attempt. The verdict job reads the jobs of its
+  own attempt, so re-run all jobs.
+- Until the BASE judge has `repomarshal ci` (v0.4), the workflow falls back to the single-job
+  `done`.
 
 ## 8. Other CI systems
 

@@ -128,8 +128,26 @@ that exist in code, or that are scheduled as v0.1 MUST/SHOULD in the roadmap.
 
 | # | Remaining threat (v0.3) | L | I | Note |
 |---|---|---|---|---|
-| T26 | Gates run the PR's code in the same CI job and as the same user as the judge. After the first gate, that code can alter `.git`, the judge's files on disk, or the Python install | 1 | 3 | Everything the judge trusts is read before the first gate, and its modules are already loaded. A gate could still subvert the post-gate tree digest, so a gate that edits files might go unnoticed. Running the gates in a separate job or as a separate user is the complete fix |
+| T26 | Gates ran the PR's code in the same CI job, as the same user, as the judge | 1 | 3 | **Closed in v0.4** in CI: `repomarshal ci` runs each gate in its own job with no token permissions, and the judge jobs run no PR code. A gate result binds to the plan, HEAD, tree and GitHub's record of its job, or it is UNKNOWN (see the v0.4 section). Locally, gates and the judge still share a user; a local PASS stays advisory |
 | T27 | Local waivers are only as strong as the TTY check: an agent that can drive a pseudo-terminal can type the confirmation | 2 | 2 | Local waivers are advisory, like every local PASS. CI ignores them |
+
+### v0.4 changes (each with tests in `tests/unit/test_waiver_identity.py` and `tests/unit/test_ci_split.py`)
+
+1. **Solo-maintainer deadlock.** The PR author could never grant a waiver, and on a one-maintainer
+   repository the author is the only CODEOWNER. BASE policy `completion.allow_author_waivers`
+   (default false) now allows it.
+2. **The agent is indistinguishable from the maintainer.** A coding agent acting through a GitHub
+   App under the maintainer's account labels and comments with the maintainer's login. Waivers
+   now require `performed_via_github_app: null` on the labeled event and on the reason comment.
+   An app value, or a missing or unreadable field, rejects the waiver. Reviews carry no such
+   field on any GitHub API, so review waivers are always rejected.
+3. **T26 closed in CI** by the split jobs above.
+
+| # | Remaining threat (v0.4) | L | I | Note |
+|---|---|---|---|---|
+| T28 | The agent holds the maintainer's own credentials outside an app (a PAT, a logged-in `gh` or a browser session) | 1 | 3 | GitHub cannot tell those actions from the maintainer's. Keep such credentials away from agent environments |
+| T29 | With `allow_author_waivers`, anyone who can act as the author in the web UI can waive | 1 | 2 | That is the maintainer by definition on a solo repository. Keep it off where a second maintainer exists |
+| T30 | A gate job lies about its own result | 2 | 2 | As in any CI: the PR's code decides its own exit code. The split stops one gate from affecting another gate, the plan, the waivers or the verdict |
 
 ## Residual risks that must be stated in the README
 

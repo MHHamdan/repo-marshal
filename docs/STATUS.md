@@ -4,59 +4,36 @@ _Last updated: 2026-10-14_
 
 ## Current phase
 
-**v0.3 is in progress** on branch `claude/v0.3`, which branched from `origin/main` at 70da76d. v0.2
-is merged to main and was verified by the owner.
+**v0.4 is in progress** on branch `claude/v0.4`, which branched from `origin/main` at b7efa16. v0.3
+(PR #1) is merged and was verified by the owner. The lead is doing the work alone, because it does
+not split cleanly into parallel agents.
 
-v0.3 scope (from the owner):
-- human override (waivers);
-- the Stop-hook loop fix;
-- the SkillSpector and Playwright adapters;
-- a field test on 5 real repositories;
-- a fresh fail-open review;
-- a PR to main, so the dogfood job runs on GitHub.
-
-| Agent | Branch | Scope | Owns | Status |
-|---|---|---|---|---|
-| override | `v03/override` | waivers: `repomarshal waive`, GitHub label/review waivers in CI, dogfood job wiring | `src/repomarshal/waivers.py`, `tests/unit/test_waivers.py`, `.github/workflows/ci.yml`, `docs/guides/ci.md`, `docs/guides/waivers.md` | **merged**; lead hardening: judge installed from BASE in dogfood, CI tokens stripped from gates, CODEOWNERS added |
-| hook-loop | `v03/hook-loop` | allow a stop on a repeated, unchanged non-PASS (with `systemMessage` UNVERIFIED); never on a new or worse verdict | `src/repomarshal/hooks.py`, `tests/unit/test_hooks.py`, `tests/unit/test_hook_loop.py` | **merged** |
-| fix-inv | `v03/fix-inv` | the field findings in the inventory (ruff --no-fix, mypy files, check scripts, packageManager, test:* scripts, Makefile, pytest.ini in tests/, workspace scopes) | `inventory.py`, `tests/unit/test_inventory.py` | **merged**; all 23 field tests pass |
-| fix-sig | `v03/fix-sig` | the field findings in signals, decisions and context (`dependency.changed`, .test.tsx not UI, `.github/scripts` as CI, integration only with code or specific triggers, lockfiles out of context) | `signals.py`, `decisions.py`, `context.py` and their unit tests | **merged** |
-| adapters | `v03/adapters` | SkillSpector (`skill_audit`) and Playwright (`runtime`) providers, plus the `agent.skill_changed` signal | `src/repomarshal/providers/**`, `tests/unit/test_provider_*.py`, the `agent.skill_changed` rule in `signals.py` | **merged**; SkillSpector pinned to the v2.12.0 tag `c7958a3` (provenance corrected), Playwright 1.63.0 |
-| field-test | `v03/field-test` | `plan` / `done --dry-run` on 5 real repositories; findings as fixtures plus failing tests | `docs/evaluation.md`, `tests/field/**`, `tests/fixtures/field/**` | **merged**: 27 commits on 5 repos, gate precision 0.80, recall 0.94, 14 findings; after fixes recall 1.00 (§9) |
-
-Contract (committed):
-- `model.Waiver` / `WaiverSource`, `EvidenceRecord.waivers`, `GateResult.tool` and
-  `PolicyRef.waivers_permit_pass`, with schemas updated;
-- `verdict.fold(..., waivers)`: only UNKNOWN or UNAVAILABLE decisions are waivable, never FAIL,
-  and only with the BASE policy permitting;
-- `api.done(waivers="none"|"local"|"github")` (the hook and MCP use "none");
-- `repomarshal waive` and `done --waivers` in the CLI;
-- the `providers` package (`discover` / `run`), wired into the inventory and the runner;
-- `repomarshal.toml` for this repo (`waivers_permit_pass = true`). It is effective only once
-  merged, because policy is read from BASE.
+v0.4 scope (from the owner):
+1. Solo-maintainer deadlock: BASE policy `completion.allow_author_waivers` (default false) lets
+   the PR author grant a label waiver. Enabled in this repo's `repomarshal.toml`. **Done.**
+2. Agent indistinguishable from the human: reject any waiver whose labeled event or reason
+   comment has `performed_via_github_app` set, or lacks the field. **Done.**
+   - Endpoints checked against GitHub's OpenAPI description: issue events and issue comments
+     expose the field.
+   - Reviews do not expose it anywhere (REST reviews, timeline `reviewed`, GraphQL
+     `PullRequestReview`), so review waivers are always rejected.
+   - Tests use payloads recorded through the Claude app on throwaway issue #2 (closed).
+3. T26: split CI (`repomarshal ci plan|gate|verdict`, `src/repomarshal/ci.py`): plan job,
+   permission-less matrix job per gate, verdict job. Results bind to the plan, HEAD (PR head or its
+   merge commit), tree and GitHub's job/step record. **Done.**
+4. Fresh fail-open review: next.
+5. PR to main with the dogfood result: after the review.
 
 ## Next step
 
-All v0.3 work is integrated on `claude/v0.3`:
-- all four agents and the two fix branches are merged;
-- the fresh fail-open review (`tests/review_v03/`) confirmed 8 fail-open paths plus one CI
-  ordering issue, and all are fixed with regression tests (threat model, "Found by the v0.3
-  adversarial review");
-- suite: 1171 passed, 23 field, 38 MCP; `plan` cold start median 177 ms.
+1. Run a fresh fail-open reviewer on the waiver identity rules and the split CI. Its tests go
+   under `tests/review_v04/`. Fix every confirmed finding with a regression test.
+2. Open the PR `claude/v0.4` → `main` and report the dogfood result.
 
-PR #1 (`claude/v0.3` → `main`) is open, and its CI results at `54c673e` are:
-- test 3.11/3.12/3.13, lint, mcp and commit-identity: green;
-- dogfood: exit 2 (UNKNOWN), as expected, judged by the v0.2 judge from main:
-  - `root:unit` passed (exit 0), but its definition changed in this PR (conftest files), so it
-    is UNKNOWN (M14);
-  - integration, runtime and a11y were required but unavailable.
-
-The first dogfood run, at `f76d96e`, was FAIL: the secrets baseline correctly flagged a fake
-`GITHUB_TOKEN="ghs_…"` in a review test. The fake was shortened in `54c673e`.
-
-Next: the owner verifies and merges. After the merge, main carries `repomarshal.toml`
-(`waivers_permit_pass = true`) and the v0.3 judge, so later PRs can reach PASS through a
-maintainer waiver label, never on their own.
+Expected dogfood result for this PR: main's judge is v0.3. It has no `ci` command, so the
+workflow uses the single-job fallback. It also rejects waivers granted by the PR author and has
+no `allow_author_waivers`. So a label from the owner cannot turn this PR's UNKNOWN into PASS. That
+works from the first PR after v0.4 merges.
 
 ## Upstream repos inspected
 
@@ -118,3 +95,8 @@ maintainer waiver label, never on their own.
   state before the judge reads BASE.
 - **Waivers are read before gates:** gates run PR code as the same user, so nothing the judge
   trusts is read after the first gate.
+- **v0.4 review waivers are rejected outright:** no GitHub API reports whether a review was
+  made through an app, and the owner required failing closed when the field is missing.
+- **v0.4 one job per gate:** PR code in one job can read the runner's artifact token. Each
+  result is therefore cross-checked against GitHub's step conclusions for its own job, which
+  PR code in another job cannot change.

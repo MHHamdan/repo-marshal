@@ -8,7 +8,7 @@ which checks this specific change requires. Every check the plan skips comes wit
 RepoMarshal then runs the required checks itself and returns a verdict (PASS, FAIL, UNKNOWN or
 BLOCKED) that never treats "could not check" as "passed".
 
-> Status: **v0.3 development slice.** CLI, Claude Code hooks, MCP server and a CI recipe;
+> Status: **v0.4 development slice.** CLI, Claude Code hooks, MCP server and a CI recipe;
 > Python ≥ 3.11, no runtime dependencies. Not yet published to PyPI. Measured on 27 commits from
 > 5 real repositories: [`docs/evaluation.md`](docs/evaluation.md).
 
@@ -51,10 +51,14 @@ cd /path/to/your/repo
   server. Tools: `repomarshal_plan`, `repomarshal_done` and `repomarshal_explain`. Each takes an
   explicit `repo_path`.
 - **CI, the authoritative verdict:** see [`docs/guides/ci.md`](docs/guides/ci.md). Run
-  `repomarshal done --base <PR base sha>` where the agent cannot write.
+  `repomarshal done --base <PR base sha>` where the agent cannot write. Better, use the v0.4 split
+  (`repomarshal ci plan` / `ci gate` / `ci verdict`): each gate that runs the PR's code gets its
+  own job with no token permissions, and the judge jobs run no PR code at all.
 - **Waivers, human only:** when a required gate cannot run, a maintainer can accept the gap for one
-  change: in CI with a `repomarshal-waive:<gate>` PR label plus a reason comment, or an approving
-  CODEOWNER review; locally with `repomarshal waive <gate> --reason ...` at a terminal. A waiver
+  change: in CI with a `repomarshal-waive:<gate>` PR label plus a reason comment, both made by a
+  person (anything done through a GitHub App, such as a coding agent acting under the
+  maintainer's account, is rejected); locally with `repomarshal waive <gate> --reason ...` at a
+  terminal. A waiver
   never turns a FAIL into a PASS, counts only when the BASE `repomarshal.toml` sets
   `[completion] waivers_permit_pass = true`, and is recorded in the evidence. The Stop hook and the
   MCP server never accept waivers. See [`docs/guides/waivers.md`](docs/guides/waivers.md).

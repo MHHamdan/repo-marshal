@@ -55,6 +55,15 @@ threat model priorities.
   non-mutating check scripts.
 - A field evaluation on 27 commits from 5 real repositories (`docs/evaluation.md`).
 
+## Done in v0.4
+
+- **Author waivers by policy** (`completion.allow_author_waivers`) for solo-maintainer
+  repositories.
+- **Waivers reject anything done through a GitHub App** (`performed_via_github_app`); review
+  waivers are rejected because no GitHub API exposes that field for reviews.
+- **Split CI verification** (`repomarshal ci plan|gate|verdict`): gates run in isolated,
+  permission-less jobs; results bind to plan, HEAD, tree and GitHub's job record (T26 closed).
+
 ## SHOULD: next, in priority order
 
 1. **Evidence hash chain** (`prev_digest`) and a `status` command that reports STALE.
