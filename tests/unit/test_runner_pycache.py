@@ -53,6 +53,12 @@ def test_planted_unchecked_pyc_is_not_executed(tmp_path):
         str(evil), cfile=str(target), dfile="calc.py",
         invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
     )  # fmt: skip
-    assert importlib.util.cache_from_source(str(r.root / "calc.py")) == str(target)
+    # The in-tree location, also when this suite itself runs inside a RepoMarshal gate (whose
+    # PYTHONPYCACHEPREFIX would otherwise redirect cache_from_source).
+    saved, sys.pycache_prefix = sys.pycache_prefix, None
+    try:
+        assert importlib.util.cache_from_source(str(r.root / "calc.py")) == str(target)
+    finally:
+        sys.pycache_prefix = saved
     res = api.done(r.root, env=_env(r))
     assert res.verdict is Verdict.FAIL, res.reasons
