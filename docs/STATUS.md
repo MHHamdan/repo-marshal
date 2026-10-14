@@ -27,8 +27,14 @@ v0.6 scope (from the owner), all done:
 
 ## Next step
 
-1. Open the v0.6 PR and report.
-2. The owner merges #3, #4 and v0.6.
+1. PR #5 (`claude/v0.6` → `main`) is open, stacked on #3 and #4. CI at `964a123`:
+   - test 3.11/3.12/3.13, lint, mcp, rm-plan and commit-identity: green;
+   - advisory dogfood: UNKNOWN (exit 2), from main's v0.3 judge (definition changes;
+     integration and dep_audit unavailable).
+
+   The first run, at `b0caea9`, was FAIL: the secrets baseline correctly flagged two
+   secret-shaped test strings, fixed in `964a123`.
+2. The owner merges #3, #4 and #5.
 3. The owner does the PyPI pending-publisher setup, the `pypi` environment and
    `RELEASE_TAGGER_EMAILS`, then tags `v0.1.0` (`docs/guides/release.md`).
 4. After the release, re-run `scripts/quickstart-check.sh` with its default spec
