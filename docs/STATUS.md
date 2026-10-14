@@ -4,7 +4,7 @@ _Last updated: 2026-10-14_
 
 ## Current phase
 
-**v0.7 is in progress** on branch `claude/v0.7`, from `origin/main` at 3986cdc. PRs #3, #4 and
+**v0.7 is in review (PR #6)** on branch `claude/v0.7`, from `origin/main` at 3986cdc. PRs #3, #4 and
 #5 (v0.4–v0.6) are merged. Scope is deliberately small:
 
 1. **Poetry false positive: done.** The `python` entry of `[tool.poetry.dependencies]` no longer
@@ -14,17 +14,26 @@ _Last updated: 2026-10-14_
    - precision 0.727 → 0.742 frozen, 0.848 → 0.866 adjusted;
    - recall stays 1.000;
    - cases with an unneeded expensive gate: 3 → 2 of 27.
-3. **Live waiver test.** Open the v0.7 PR. The owner adds the waiver label and comment named in
-   the PR report, to test author waivers with main's v0.6 judge. Two judges read the waiver:
-   the advisory `dogfood` job and the trusted `repomarshal-verdict` workflow.
+3. **Gate-environment test fix.** `test_planted_unchecked_pyc_is_not_executed` failed when the
+   suite ran as a gate (the inherited `PYTHONPYCACHEPREFIX` redirected `cache_from_source`), so
+   main's judge reported FAIL. Fixed in f5515d5.
+4. **Live waiver test: PR #6 is open.** Main's v0.6 judge (`3986cdc`), run locally on this branch,
+   gives UNKNOWN with three waivable items:
+   - `root:unit`, tainted by `tests.discovery_narrowed` (fixture pyproject `testpaths`);
+   - `integration`, required but unavailable;
+   - `dep_audit`, required but unavailable.
+
+   The owner was asked to post this comment first (unedited, as prose):
+   `repomarshal-waive root:unit: ...`, `repomarshal-waive integration: ...` and
+   `repomarshal-waive dep_audit: ...`. Then add the labels `repomarshal-waive:root:unit`,
+   `repomarshal-waive:integration` and `repomarshal-waive:dep_audit`.
 
 ## Next step
 
-1. Open the v0.7 PR and predict its open gates with main's judge.
-2. Give the owner the exact comment and labels.
-3. Watch the re-runs after the label, and record the result (advisory dogfood, and the
-   `repomarshal/verdict` status) here.
-4. Then ship 0.1.0 (`docs/guides/release.md`).
+1. Watch the CI re-runs on PR #6 after the labels are added. Record the advisory `dogfood` verdict
+   and the `repomarshal/verdict` status here. Expected: PASS with three author waivers.
+2. If a waiver is rejected, read the judge's `notes` in the dogfood log before changing anything.
+3. After the owner merges, ship 0.1.0 (`docs/guides/release.md`).
 
 ## Upstream repos inspected
 
