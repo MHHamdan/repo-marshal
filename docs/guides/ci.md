@@ -246,13 +246,23 @@ How it works:
 
 1. The PR's `ci` run has the `rm-plan` job and the permission-less `rm-gate-N` jobs. They check
    out the PR head SHA.
-2. `repomarshal-verdict` runs from the default branch. It posts `repomarshal/verdict: pending`
-   on the PR head, installs the judge from the PR's base commit (which must be on the base
-   branch), and checks out the PR head as data only. It then runs `repomarshal ci
-   trusted-verdict`, which:
+2. `repomarshal-verdict` runs from the default branch, in three jobs:
+   - `pending`, when a ci run is requested: posts `repomarshal/verdict: pending`, so an old
+     verdict never stands while its inputs (labels, code) change;
+   - `verdict`, when the ci run completes (cancelled runs too): read-only, no secrets. It
+     installs the judge from the workflow's own default-branch commit (never from a commit the
+     PR chose), checks out the PR head as data only, and runs `repomarshal ci trusted-verdict`;
+   - `post`: posts the state the verdict job produced, or `error` if it produced none.
+
+   Only `pending` and `post` can reach the App token, and they run nothing that was installed.
+   `repomarshal ci trusted-verdict`:
    - checks with the Actions API that the triggering run is a `pull_request` run of
      `.github/workflows/ci.yml` for that head SHA and attempt;
-   - finds the single open PR with that head;
+   - finds the single open PR with that head, and judges it only if it targets the default
+     branch (a PR chooses its base, and an attacker's branch would bring its own `ci.yml` and
+     policy);
+   - posts nothing if a newer `pull_request` run of ci for the same commit exists (that run
+     brings its own verdict);
    - refuses the gate records if the PR changed `.github/workflows/ci.yml` since its merge base;
    - re-plans, re-reads the waivers, runs the native checks, and binds each `rm-gate-N` result
      to GitHub's step record of that job (as in the split above);
@@ -260,7 +270,10 @@ How it works:
      including a judge that did not finish.
 3. If a PR edits `ci.yml`, the verdict is UNKNOWN (`error`) unless a person reviews the change
    and grants the waiver target **`ci-workflow`**: the label `repomarshal-waive:ci-workflow`
-   plus a comment line `repomarshal-waive ci-workflow: <reason>`. The usual waiver rules apply:
+   plus a comment line `repomarshal-waive ci-workflow: <reason>` whose reason contains the
+   first 12 characters of the reviewed file's blob id (`git rev-parse HEAD:.github/workflows/ci.yml`;
+   the UNKNOWN reason prints it). A later rewrite of `ci.yml` has another blob id, so it is not
+   covered by the same label. The usual waiver rules apply:
    made by a person, not through an app; BASE `waivers_permit_pass`; author only with
    `allow_author_waivers`. It accepts the workflow change, not any gate result, and is recorded
    in the evidence. If a PR renames or deletes the `ci` workflow, `repomarshal-verdict` never

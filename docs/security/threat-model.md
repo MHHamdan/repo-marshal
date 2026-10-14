@@ -186,6 +186,24 @@ that exist in code, or that are scheduled as v0.1 MUST/SHOULD in the roadmap.
 | T36 | An agent with admin rights (for example through an app acting as the owner) changes branch protection, the environment, or pushes to the default branch | 1 | 3 | Outside what a workflow can enforce. Turn on "Do not allow bypassing", and do not give agents administration permission |
 | T37 | The tested commit is the PR head, not GitHub's merge commit with the latest base | 2 | 1 | The plan uses the merge base. Turn on "Require branches to be up to date before merging" to re-verify after the base moves |
 
+### Found by the v0.5 adversarial review (all fixed, each with a regression test in `tests/review_v05/`)
+
+1. **A PR into an attacker's branch was judged by that branch** (critical). A PR chooses its
+   base. A branch the attacker pushed brought its own `ci.yml` (forged gate jobs) and policy, and
+   the trusted job installed and built the judge from that base, inside a job holding the App
+   secrets. Now only PRs into the default branch are judged (checked in the workflow and in the
+   judge). The judge is installed from the workflow's own default-branch commit. The App token
+   lives only in the `pending` and `post` jobs, which run nothing installed.
+2. **The `ci-workflow` waiver covered later rewrites of `ci.yml`.** Its reason must now contain
+   the reviewed file's blob id.
+3. **A cancelled ci run left an old success standing.** Cancelled runs are judged too (missing
+   gates, so UNKNOWN), unless a newer `pull_request` run for the same commit supersedes them.
+4. **Nothing reset the status while a new ci run was in progress, and skipped verdict runs
+   could displace a pending one.** `pending` is now posted when a ci run is requested, and there
+   is no workflow-level concurrency group.
+5. **The evidence artifact included PR-controlled files.** Only the judge's own output is
+   uploaded.
+
 ## Residual risks that must be stated in the README
 
 1. **A local PASS is advisory.** A same-user agent can, with deliberate effort, defeat any local
