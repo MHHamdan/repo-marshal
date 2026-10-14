@@ -641,3 +641,68 @@ def test_taint_is_deterministic_and_invariants_hold():
     root = by_gate(a)["root:unit"]
     assert [t.signal for t in root.taint] == ["tests.deleted", "tests.skip_added"]
 
+
+# --------------------------------------------------------------------------- workspace coverage
+
+
+def _mono(root_available: bool = True, a_changed_def: bool = False) -> Inventory:
+    evidence = "root vitest reads vitest.config.ts projects, which include packages/a"
+    return Inventory(
+        gates=(
+            gate("root:unit", K.UNIT, "", ("pnpm", "run", "test"), available=root_available),
+            gate(
+                "packages/a:unit",
+                K.UNIT,
+                "packages/a/",
+                ("pnpm", "run", "test"),
+                covered_by="root:unit",
+                coverage_evidence=evidence,
+                definition_changed=a_changed_def,
+            ),
+            gate("packages/b:unit", K.UNIT, "packages/b/", ("pnpm", "run", "test")),
+            *native_gates(),
+        ),
+        scopes=("", "packages/a/", "packages/b/"),
+    )
+
+
+def test_covered_package_gate_is_skipped_in_favour_of_the_root_gate():
+    inv = _mono()
+    _, decisions = plan(change(mod("packages/a/src/x.ts", "export const x = 1")), inv)
+    _check_invariants(decisions, inv)
+    g = by_gate(decisions)
+    assert g["root:unit"].status is REQ
+    assert g["root:unit"].reasons[-1].text == (
+        "also covers the workspace package gates packages/a:unit"
+    )
+    a = g["packages/a:unit"]
+    assert a.status is SKIP
+    assert a.reasons[0].text == (
+        "covered by root:unit (required): root vitest reads vitest.config.ts projects, which "
+        "include packages/a; its checks run once, at the root"
+    )
+    assert g["packages/b:unit"].status is SKIP  # not relevant
+    # widening: the uncovered package still runs, the covered one does not run twice
+    g = by_gate(plan(change(mod("backend/uv.lock")), inv)[1])
+    assert (g["root:unit"].status, g["packages/a:unit"].status) == (REQ, SKIP)
+    assert g["packages/b:unit"].status is REQ
+
+
+def test_unavailable_root_gate_still_covers():
+    g = by_gate(plan(change(mod("packages/a/src/x.ts")), _mono(root_available=False))[1])
+    assert g["root:unit"].status is UNAV
+    assert g["packages/a:unit"].status is SKIP
+    assert g["packages/a:unit"].reasons[0].text.startswith("covered by root:unit (unavailable)")
+
+
+def test_package_gate_with_changed_definition_is_not_covered():
+    # M14: its UNKNOWN must surface, so it keeps running next to the root gate.
+    g = by_gate(plan(change(mod("packages/a/src/x.ts")), _mono(a_changed_def=True))[1])
+    assert (g["root:unit"].status, g["packages/a:unit"].status) == (REQ, REQ)
+    assert len(g["root:unit"].reasons) == 1
+
+
+def test_coverage_names_a_gate_that_is_not_in_the_plan():
+    inv = Inventory(tuple(x for x in _mono().gates if x.id != "root:unit"), ("packages/a/",))
+    g = by_gate(plan(change(mod("packages/a/src/x.ts")), inv)[1])
+    assert g["packages/a:unit"].status is REQ

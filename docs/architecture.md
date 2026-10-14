@@ -147,6 +147,43 @@ The inventory, at BASE:
 No gate of kind `security_scan`, `dep_audit` or `skill_audit` exists. If a plan requires one, the
 decision is UNAVAILABLE.
 
+### 3.5 Root gates that cover workspace packages (v0.6)
+
+Workspace packages (`package.json` `workspaces`, `pnpm-workspace.yaml`) are scopes of their own, so a
+monorepo can have `root:unit` and `packages/zod:unit` while the root script already runs the
+package's tests. Requiring both runs the same checks twice. The inventory therefore marks a
+workspace package's script gate as **covered** by the root script gate of the same kind
+(`Gate.covered_by = "root:<kind>"`, with a one-line `coverage_evidence`) when, and only when, there
+is explicit evidence that the root script runs the package's check (`workspace.py`):
+
+| Evidence | Root script (a `&&`-separated command of it) | Package gate |
+|---|---|---|
+| Recursive workspace runner | `pnpm -r [run] <s>`, `nub run -r <s>`, `npm run <s> --workspaces`, `yarn workspaces run <s>`, `yarn workspaces foreach -A run <s>`, `turbo run <s>`, `lerna run <s>` (and the package matches `lerna.json` `packages`, if listed) | any kind, script named `<s>` |
+| Test runner projects (unit only) | `vitest [run]` whose root config (`--config`, else the first `vitest.config.*`, else `vite.config.*`; a `vitest.workspace.*` file when it has no `projects`) lists the package in `projects`; or `jest` whose root config (`jest.config.*` or `package.json` `jest`) lists it in `projects` | the script is the bare runner (`vitest run`, `jest`, optionally via `npx`/`pnpm exec`/`nub exec --node`), with no other argument and no pre/post hook |
+
+Everything else is **no evidence**, and then both gates stay (the safe default). In particular:
+filters and narrowing (`--filter`, `-F`, `--workspace`, `--scope`, `--since`, `--project`,
+positional paths), unknown flags or extra arguments, a variable assignment in front of a command,
+any shell operator other than `&&` (`;`, `||` and pipes can hide a failure), a projects array that
+contains anything but string and object literals (a variable or spread could hide an exclusion),
+several `projects` keys, a package script that adds options to the runner, and `nx run-many` (nx
+targets can be redefined by `project.json` and plugins, so the package script is not necessarily
+what runs). A root `biome lint .` does not cover a package's `tslint` script: a different tool is a
+different check, whatever paths it walks.
+
+The evidence is read at BASE, like every gate definition, and must **also hold in the working
+tree**, with the package still a workspace package there. An agent that edits the root vitest
+config, the root script or the `workspaces` list so that the root run no longer reaches the
+package therefore keeps the package gate required (§7).
+
+Decisions (§4.2) act on it per kind: when a covered package gate would be REQUIRED or UNAVAILABLE
+and its covering root gate is itself REQUIRED or UNAVAILABLE, the package gate becomes SKIPPED with
+the reason "covered by root:unit (required): <evidence>; its checks run once, at the root", and the
+root decision lists the package gates it covers. A package gate whose own definition changed in
+the change (M14) is never skipped this way, so its UNKNOWN still surfaces. Field effect: zod's
+`packages/zod:unit` and `packages/mini:unit` are covered by `root:unit` through
+`vitest.config.ts` `projects: ["packages/*", ...]`; `packages/tsc:lint` (tslint) is not.
+
 ## 4. Planning algorithm
 
 ### 4.1 Signal catalogue (v0.1)
@@ -229,7 +266,8 @@ compile(change, inventory, policy, task):
 | runtime | `frontend.ui`, or `security.auth_path` together with `code.changed` | **UNAVAILABLE** |
 | a11y | `frontend.ui` | **UNAVAILABLE** |
 
-`dep_audit` and the widened `unit` gates stay required for every dependency change.
+Workspace coverage (§3.5) is applied after these rules, per kind. `dep_audit` and the widened
+`unit` gates stay required for every dependency change.
 
 `WHEN_CONFIGURED` holds the kinds marked NOT_APPLICABLE above. A repository without a linter has no
 lint obligation. A required verification the repository cannot perform is UNAVAILABLE, and the

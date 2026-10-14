@@ -181,6 +181,18 @@
         },
         "definition_changed": {
           "type": "boolean"
+        },
+        "covered_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "coverage_evidence": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

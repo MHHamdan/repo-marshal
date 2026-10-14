@@ -41,6 +41,23 @@ Implementation notes (precisions within the contract):
   A manifest (package.json, pyproject.toml, requirements*.txt, ...) still triggers it, and so do
   security.*, agent.config_changed, task.* and elevated risk. The SECRETS decision then names the
   skipped trigger in an extra reason.
+- v0.6 workspace coverage (architecture §3.5): a REQUIRED or UNAVAILABLE workspace package gate
+  whose Gate.covered_by names a root gate of the same kind that is itself REQUIRED or UNAVAILABLE
+  becomes SKIPPED "covered by <root>: <evidence>", and the root decision gets a reason listing
+  the packages it covers. A package gate whose definition changed in this change stays, so the
+  M14 UNKNOWN is not lost.
+- task.* triggers (TASK_TRIGGERS below) map task domains onto kinds; they can only add a
+  trigger, so task text can never remove a requirement (threat T8).
+
+v0.2 taint (threat T2): every REQUIRED or UNAVAILABLE gate decision of a test-running kind
+(TEST_RUNNING_KINDS) whose gate covers a file of a tamper signal (signals.TAMPER_SIGNALS) gets
+one taint Reason per covered signal note, e.g. "tests.deleted: backend/tests/test_refresh.py
+removes test_rotation; this gate's result cannot vouch for the change". A root-scope gate covers
+every file. tests.discovery_narrowed from a repository-root file (no directory) taints the
+test-running gates of every scope: runners read config from parent directories. The gate stays
+REQUIRED, so it still runs and its evidence shows the real exit code; api.done reports its
+result as UNKNOWN. Kind-level decisions (no gate) are not tainted: they are already UNKNOWN or
+not counted.
 """
 
 from __future__ import annotations
@@ -345,6 +362,43 @@ def _secrets_exemption(
     return [t for t in triggers if t.signal != dep.id], note
 
 
+def _apply_coverage(decisions: list[GateDecision], gates: dict[str, Gate]) -> list[GateDecision]:
+    """Workspace coverage (module doc): skip a package gate whose covering root gate is selected."""
+    status = {d.gate_id: d.status for d in decisions if d.gate_id and d.status in SELECTED}
+    covered: dict[str, list[str]] = {}
+    out: list[GateDecision] = []
+    for d in decisions:
+        g = gates.get(d.gate_id) if d.gate_id else None
+        root = g.covered_by if g is not None else None
+        if (
+            g is not None
+            and root is not None
+            and root != g.id
+            and d.status in SELECTED
+            and root in status
+            and not g.definition_changed
+        ):
+            covered.setdefault(root, []).append(g.id)
+            text = (
+                f"covered by {root} ({str(status[root]).lower()}): {g.coverage_evidence}; "
+                "its checks run once, at the root"
+            )
+            d = GateDecision(d.kind, DecisionStatus.SKIPPED, (Reason(text),), g.id)
+        out.append(d)
+    if not covered:
+        return out
+    return [
+        dataclasses.replace(
+            d,
+            reasons=d.reasons
+            + (Reason(f"also covers the workspace package gates {', '.join(covered[d.gate_id])}"),),
+        )
+        if d.gate_id in covered
+        else d
+        for d in out
+    ]
+
+
 def _taint(g: Gate, tamper: list[Signal]) -> tuple[Reason, ...]:
     out: list[Reason] = []
     for s in tamper:
@@ -386,7 +440,7 @@ def decide_gates(
         note = None
         if kind is GateKind.SECRETS:
             triggers, note = _secrets_exemption(triggers, by_id, change)
-        decided = _decide_kind(kind, gates, triggers)
+        decided = _apply_coverage(_decide_kind(kind, gates, triggers), by_gate)
         if note is not None and not triggers:
             decided = [dataclasses.replace(d, reasons=(note,)) for d in decided]
         out.extend(decided)

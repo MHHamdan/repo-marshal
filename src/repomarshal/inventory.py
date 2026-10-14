@@ -83,6 +83,15 @@ package.json, pyproject.toml and repomarshal.toml stay compared semantically (ab
 under .repomarshal/ or node_modules/ never count. The changed paths are appended to Gate.source
 ("...; definition changed: <paths>").
 
+Workspace coverage (v0.6; architecture §3.5): a package.json script gate of a workspace package
+gets covered_by="root:<kind>" and a coverage_evidence text when the root package.json script gate
+of the same kind already runs its checks, by the explicit evidence rules of workspace.py (a
+recursive workspace runner of the same script name, or, for unit, a root vitest/jest run whose
+root config lists the package among its projects while the package script is the bare runner).
+The evidence is read at BASE and must also hold in the working tree, and the package must still
+be a workspace package there; otherwise nothing is set and both gates stay. Only decisions act on
+it (a covered package gate is SKIPPED while its root gate is selected).
+
 Gate ids are unique: a subdirectory scope named "root" (any case) is "root/:<kind>" so it cannot
 collide with the repository root scope "root:<kind>"; build_inventory raises ValueError on any
 duplicate id.
@@ -92,12 +101,10 @@ from __future__ import annotations
 
 import configparser
 import dataclasses
-import fnmatch
 import json
 import os
 import posixpath
 import re
-import shlex
 import shutil
 import sys
 import tomllib
@@ -121,6 +128,9 @@ from repomarshal.model import (
 )
 from repomarshal.native import native_gates
 from repomarshal.policy import POLICY_FILE
+from repomarshal.workspace import Script, root_coverage
+from repomarshal.workspace import glob_match as _glob_match
+from repomarshal.workspace import shell_words as _shell_words
 
 PYTHON_MANIFESTS = (
     "pyproject.toml",
@@ -769,21 +779,10 @@ def _pnpm_workspace_packages(text: str) -> list[str]:
     return out
 
 
-def _glob_match(pattern: list[str], parts: list[str]) -> bool:
-    if not pattern:
-        return not parts
-    if pattern[0] == "**":
-        return any(_glob_match(pattern[1:], parts[i:]) for i in range(len(parts) + 1))
-    return (
-        bool(parts)
-        and fnmatch.fnmatchcase(parts[0], pattern[0])
-        and _glob_match(pattern[1:], parts[1:])
-    )
-
-
-def _workspace_scopes(tree: _Tree, files: tuple[str, ...]) -> list[str]:
-    """Directories (at BASE) holding a package.json that a workspace glob matches."""
-    include, exclude = [], []
+def _workspace_patterns(tree: _Tree) -> tuple[list[list[str]], list[list[str]]]:
+    """(include, exclude) workspace globs of the root, split into path segments."""
+    include: list[list[str]] = []
+    exclude: list[list[str]] = []
     for glob in _workspace_globs(tree):
         negated = glob.startswith("!")
         glob = glob[1:] if negated else glob
@@ -795,32 +794,70 @@ def _workspace_scopes(tree: _Tree, files: tuple[str, ...]) -> list[str]:
         if not glob or glob.startswith("../") or glob == "..":
             continue
         (exclude if negated else include).append(glob.split("/"))
-    if not include:
+    return include, exclude
+
+
+def _in_workspace(patterns: tuple[list[list[str]], list[list[str]]], directory: str) -> bool:
+    include, exclude = patterns
+    parts = directory.split("/")
+    return any(_glob_match(p, parts) for p in include) and not any(
+        _glob_match(p, parts) for p in exclude
+    )
+
+
+def _workspace_scopes(tree: _Tree, files: tuple[str, ...]) -> list[str]:
+    """Directories (at BASE) holding a package.json that a workspace glob matches."""
+    patterns = _workspace_patterns(tree)
+    if not patterns[0]:
         return []
     out = []
     for f in files:
         directory, _, name = f.rpartition("/")
         if name != "package.json" or not directory or _never_counts(f):
             continue
-        parts = directory.split("/")
-        if any(_glob_match(p, parts) for p in include) and not any(
-            _glob_match(p, parts) for p in exclude
-        ):
+        if _in_workspace(patterns, directory):
             out.append(directory + "/")
     return out
 
 
+# --------------------------------------------------------------------------- workspace coverage
+
+
+def _script_of(tree: _Tree, scope: str, name: str) -> Script | None:
+    data = tree.parsed(scope + "package.json", "json")
+    scripts = data.get("scripts") if isinstance(data, dict) else None
+    body = scripts.get(name) if isinstance(scripts, dict) else None
+    if not isinstance(body, str) or not body.strip():
+        return None
+    hooks = any(isinstance(scripts.get(p + name), str) for p in ("pre", "post"))
+    return Script(name, body, hooks)
+
+
+def _coverage(trees: tuple[_Tree, ...], root: _Candidate, pkg: _Candidate) -> str | None:
+    """Evidence (workspace.root_coverage) that the root script gate runs the workspace package
+    gate's checks. It must hold in every tree, BASE and the working tree: a change that drops the
+    package from the workspace, or the root script's evidence, keeps both gates."""
+    directory = pkg.gate.scope[:-1]
+    evidence: str | None = None
+    for tree in trees:
+        if tree.read(pkg.gate.scope + "package.json") is None:
+            return None
+        if not _in_workspace(_workspace_patterns(tree), directory):
+            return None
+        root_script = _script_of(tree, "", root.gate.argv[-1])
+        pkg_script = _script_of(tree, pkg.gate.scope, pkg.gate.argv[-1])
+        if root_script is None or pkg_script is None:
+            return None
+        found = root_coverage(
+            tree, pkg.gate.kind is GateKind.UNIT, root_script, pkg_script, directory
+        )
+        if found is None:
+            return None
+        evidence = evidence or found
+    return evidence
+
+
 # --------------------------------------------------------------------------- definition files
-
-
-def _shell_words(command: str) -> list[str]:
-    """Words of a shell command (operators split off); whitespace split if it does not lex."""
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        return list(lexer)
-    except ValueError:
-        return command.split()
 
 
 def _never_counts(path: str) -> bool:
@@ -971,12 +1008,23 @@ def build_inventory(
                 taken.add(key)
                 candidates.append(_with_winner(cand, files))
 
+    # Root script gates that may cover the same kind in workspace packages (architecture §3.5).
+    roots = {c.gate.kind: c for c in candidates if c.gate.scope == "" and c.family == SCRIPT_GATE}
+    workspace = frozenset(_workspace_scopes(base_tree, files))
+
     gates: list[Gate] = []
     for cand in candidates:
         gate = cand.gate
         if gate.provider == "native":
             gates.append(gate)
             continue
+        root = roots.get(gate.kind)
+        if root is not None and cand.family == SCRIPT_GATE and gate.scope in workspace:
+            evidence = _coverage((base_tree, work_tree), root, cand)
+            if evidence:
+                gate = dataclasses.replace(
+                    gate, covered_by=root.gate.id, coverage_evidence=evidence
+                )
         digest = gate.definition_digest or _digest(cand.definition(base_tree, gate.scope))
         changed = _digest(cand.definition(work_tree, gate.scope)) != digest
         gate = dataclasses.replace(gate, definition_digest=digest, definition_changed=changed)
