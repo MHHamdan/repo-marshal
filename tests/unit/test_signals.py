@@ -1264,3 +1264,74 @@ def test_command_narrowing_v02():
     assert sig.command_narrowing("pip install pytest") == {}
     (key,) = sig.command_narrowing("PYTEST_ADDOPTS='-k x' pytest")
     assert key[0] == "PYTEST_ADDOPTS="
+
+
+# ---- v0.3: agent.skill_changed (ADR-002, skill_audit)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".agents/skills/deploy/SKILL.md",
+        ".claude/skills/review/scripts/run.py",
+        "skills/greet/SKILL.md",
+        "skills/greet/assets/data.json",
+        "SKILLS/Greet/notes.txt",  # case-insensitive, like every path rule
+        "plugins/x/SKILL.md",  # a SKILL.md anywhere makes its directory a skill
+        "SKILL.md",
+    ],
+)
+def test_skill_changed_fires_for_skill_files(path):
+    for status in (A, M):
+        assert "agent.skill_changed" in _ids_for(path, status), (path, status)
+
+
+@pytest.mark.parametrize(
+    "path", ["skills/README.md", "docs/skills/x/guide.md", "src/skill.py", ".claude/skills/x"]
+)
+def test_skill_changed_ignores_non_skill_files(path):
+    assert "agent.skill_changed" not in _ids_for(path)
+
+
+def test_skill_changed_ignores_deleted_files():
+    assert "agent.skill_changed" not in _ids_for("skills/greet/SKILL.md", D)
+
+
+def test_skill_changed_is_elevated_widening_agent_config():
+    (s,) = [
+        x
+        for x in sig.evaluate_signals(NOWHERE, cs(f("skills/a/b.py")), Policy())
+        if x.id == "agent.skill_changed"
+    ]
+    assert s.risk is Risk.ELEVATED and s.domain == "agent-config"
+    assert "agent.skill_changed" in sig.WIDENING
+
+
+def test_skill_changed_rename_lists_both_paths():
+    change = cs(f("lib/b.py", R, old_path="skills/a/b.py"))
+    assert ids(change)["agent.skill_changed"] == ("lib/b.py", "skills/a/b.py")
+
+
+def test_skill_changed_uses_skill_md_directories_at_base(tmp_path):
+    repo = GitRepo(tmp_path)
+    repo.write("plugins/p/tools/lint/SKILL.md", "---\nname: lint\n---\n")
+    repo.write("plugins/p/tools/lint/run.sh", "echo hi\n")
+    repo.write("plugins/p/other.sh", "echo hi\n")
+    base = repo.commit()
+    inside = cs(f("plugins/p/tools/lint/run.sh"), base=base)
+    outside = cs(f("plugins/p/other.sh"), base=base)
+    assert "agent.skill_changed" in ids(inside, repo=repo.root)
+    assert "agent.skill_changed" not in ids(outside, repo=repo.root)
+
+
+def test_skill_dir():
+    known = frozenset({"plugins/p/lint", "plugins/p"})
+    assert sig.skill_dir(".claude/skills/Review/a/b.md") == ".claude/skills/Review"
+    assert sig.skill_dir("Skills/x/y") == "Skills/x"
+    assert sig.skill_dir("a/b/skill.md") == "a/b"
+    assert sig.skill_dir("SKILL.md") == ""
+    assert sig.skill_dir("plugins/p/lint/deep/x.py", known) == "plugins/p/lint"  # deepest wins
+    assert sig.skill_dir("plugins/p/x.py", known) == "plugins/p"
+    assert sig.skill_dir("plugins/q/x.py", known) is None
+    assert sig.skill_dir("anything/at/all.py", frozenset({""})) == ""
+    assert sig.skill_dir("skills/") is None and sig.skill_dir("skills//x") is None

@@ -71,6 +71,12 @@ definition and marker patterns below are matched against.
   (`npm test -- -t x`). Scripts and addopts are read the same way. A worktree file that cannot
   be read or parsed fires (fail closed).
 - Notes ("<path> <what>", one per file) name tests and options, never values or other content.
+
+v0.3 adds agent.skill_changed (elevated, widening, domain agent-config; ADR-002): an added,
+modified or renamed file that belongs to an agent skill. A skill directory is
+`.agents/skills/<n>/`, `.claude/skills/<n>/` or `skills/<n>/` (skills.SKILL_ROOTS), or any
+directory holding a SKILL.md at BASE or in the change (skill_dir). Deleted files do not fire it.
+It requires the skill_audit gate (providers: SkillSpector).
 """
 
 from __future__ import annotations
@@ -86,7 +92,7 @@ import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from functools import cache
+from functools import cache, lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +116,7 @@ WIDENING: frozenset[str] = frozenset(
         "policy.self_modified",
         "ci.changed",
         "agent.config_changed",
+        "agent.skill_changed",
         "tests.deleted",
         "tests.skip_added",
         "tests.discovery_narrowed",
@@ -277,6 +284,60 @@ def _is_agent_config(path: str) -> bool:
         or path.startswith(AGENT_PREFIXES)
         or path in AGENT_ROOT_FILES
     )
+
+
+# agent.skill_changed: a file of an agent skill (v0.3). The skill roots are those of skills.py;
+# a directory with a SKILL.md (at BASE, or the changed file itself) is a skill directory too.
+SKILL_ROOTS: tuple[str, ...] = (".agents/skills/", ".claude/skills/", "skills/")
+SKILL_FILE = "skill.md"  # compared case-insensitively
+
+
+def skill_dir(path: str, known: Iterable[str] = ()) -> str | None:
+    """The skill directory (repo-relative, no trailing slash; "" for the root) that `path`
+    belongs to, or None. `known` holds directories that contain a SKILL.md (base_skill_dirs);
+    the deepest one containing `path` wins. Matching is case-insensitive; the returned directory
+    keeps the case of `path`."""
+    low = path.lower()
+    for root in SKILL_ROOTS:
+        if low.startswith(root):
+            rest = path[len(root) :]
+            if "/" in rest and rest.split("/", 1)[0]:
+                return path[: len(root)] + rest.split("/", 1)[0]
+    head, _, name = path.rpartition("/")
+    if name.lower() == SKILL_FILE:
+        return head
+    best: str | None = None
+    for d in known:
+        if d == "" or low.startswith(d.lower() + "/"):
+            if best is None or len(d) > len(best):
+                best = d
+    return None if best is None else path[: len(best)]
+
+
+@lru_cache(maxsize=32)
+def _base_skill_dirs(repo: str, base: str | None) -> frozenset[str]:
+    dirs = set()
+    for f in git.list_files_at(Path(repo), base):
+        head, _, name = f.rpartition("/")
+        if name.lower() == SKILL_FILE:
+            dirs.add(head)
+    return frozenset(dirs)
+
+
+def base_skill_dirs(repo: Path, base: str | None) -> frozenset[str]:
+    """Directories that contain a SKILL.md at BASE ("" for the root). Empty when BASE cannot be
+    listed (the fixed skill roots still apply)."""
+    try:
+        return _base_skill_dirs(str(Path(repo)), base)
+    except (GitError, OSError):
+        return frozenset()
+
+
+def _skill_changed(f: ChangedFile, ctx: _Ctx) -> tuple[str, ...]:
+    if f.status is FileStatus.DELETED:
+        return ()
+    known = base_skill_dirs(ctx.repo, ctx.base)
+    return tuple(p for p in _candidates(f) if skill_dir(p, known) is not None)
 
 
 # policy.self_modified: the policy file at the repository root.
@@ -1510,6 +1571,14 @@ CATALOGUE: tuple[Rule, ...] = (
         Risk.ELEVATED,
         "agent instructions, settings, hooks or MCP config changed",
         _each_path(_is_agent_config),
+    ),
+    Rule(
+        "agent.skill_changed",
+        "agent-config",
+        Risk.ELEVATED,
+        "agent skill added or changed (SKILL.md, or a file under .agents/skills/<n>/, "
+        ".claude/skills/<n>/, skills/<n>/ or a directory with a SKILL.md)",
+        _skill_changed,
     ),
     _tamper_rule(
         "tests.deleted",
