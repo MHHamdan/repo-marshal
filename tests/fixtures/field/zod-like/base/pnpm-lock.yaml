@@ -1,0 +1,6 @@
+lockfileVersion: '9.0'
+importers:
+  packages/integration:
+    dependencies:
+      zod:
+        specifier: 4.6.4

@@ -1,0 +1,16 @@
+{
+  "name": "zustandlike",
+  "private": true,
+  "version": "5.0.15",
+  "packageManager": "pnpm@11.3.0",
+  "scripts": {
+    "test": "pnpm run \"/^test:.*/\"",
+    "test:format": "prettier . --list-different",
+    "test:types": "tsc --noEmit",
+    "test:lint": "eslint .",
+    "test:spec": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.0"
+  }
+}

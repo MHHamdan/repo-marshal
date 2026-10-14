@@ -1,0 +1,18 @@
+{
+  "name": "expresslike",
+  "version": "5.3.0",
+  "license": "MIT",
+  "dependencies": {
+    "proxy-addr": "^2.0.8",
+    "qs": "^6.16.0",
+    "range-parser": "^1.2.1"
+  },
+  "devDependencies": {
+    "eslint": "8.47.0",
+    "mocha": "^10.7.3"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "test": "mocha --require test/support/env --reporter spec --check-leaks test/ test/acceptance/"
+  }
+}

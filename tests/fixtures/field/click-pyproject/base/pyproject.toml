@@ -1,0 +1,21 @@
+[project]
+name = "clicklike"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+files = ["src", "tests/typing"]
+strict = true
+
+[tool.pyright]
+include = ["src", "tests/typing"]
+
+[tool.ruff]
+src = ["src"]
+fix = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
