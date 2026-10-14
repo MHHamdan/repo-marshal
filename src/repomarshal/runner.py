@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -161,6 +163,19 @@ def _run(repo: Path, gate: Gate, change: ChangeSet, env: Mapping[str, str] | Non
     # A file the change adds in the gate's cwd (e.g. backend/pytest.py) must not shadow the tool
     # that `python -m <tool>` is meant to run (fail-open review #5).
     run_env["PYTHONSAFEPATH"] = "1"
+    # Python bytecode goes to (and is only read from) a private directory outside the tree
+    # (v0.6): a gate importing the project must not write __pycache__/ into the tree (that
+    # changed the tree digest, so a first run on a repository without a .gitignore was UNKNOWN),
+    # and a .pyc planted in the tree's __pycache__/ is never executed instead of its source.
+    pycache = tempfile.mkdtemp(prefix="repomarshal-pycache-")
+    run_env["PYTHONPYCACHEPREFIX"] = pycache
+    try:
+        return _run_process(gate, cwd, run_env)
+    finally:
+        shutil.rmtree(pycache, ignore_errors=True)
+
+
+def _run_process(gate: Gate, cwd: Path, run_env: dict[str, str]) -> GateResult:
     start = time.monotonic()
     try:
         proc = subprocess.Popen(  # noqa: S603 - argv list, shell=False by design (ADR-002)
