@@ -56,7 +56,11 @@ def gh_stub(tmp: Path, pulls: list[dict]) -> Path:
 def run(script: str, tmp: Path, bindir: Path, **env: str) -> subprocess.CompletedProcess:
     out = tmp / "github_output"
     out.touch()
+    event = tmp / "event.json"  # a workflow_run payload: the default branch is main
+    if not event.exists():
+        event.write_text(json.dumps({"repository": {"default_branch": "main"}}))
     full = {
+        "GITHUB_EVENT_PATH": str(event),
         **GIT_ENV,
         "PATH": f"{bindir}{os.pathsep}{GIT_ENV['PATH']}",
         "GITHUB_REPOSITORY": REPO,
@@ -139,3 +143,21 @@ def test_post_status_only_passes_through_known_states(tmp_path, state, posted):
     log = (tmp_path / "gh.log").read_text()
     assert f"state={posted} " in log and "context=repomarshal/verdict" in log
     assert f"repos/{REPO}/statuses/{'a' * 40}" in log
+
+
+def test_find_base_refuses_a_pr_into_another_branch(tmp_path):
+    ws, base, head = workspace(tmp_path)
+    other = pull(head, base)
+    other["base"]["ref"] = "feature"
+    p = run(step_script("Find the PR base"), tmp_path, gh_stub(tmp_path, [other]),
+            HEAD_SHA=head, GITHUB_WORKSPACE=str(ws))  # fmt: skip
+    assert p.returncode != 0 and "not the default branch" in p.stdout
+
+
+@pytest.mark.parametrize("state", ["skip"])
+def test_post_status_skip_posts_nothing(tmp_path, state):
+    bindir = gh_stub(tmp_path, [])
+    p = run(step_script("post the verdict status"), tmp_path, bindir, HEAD_SHA="a" * 40,
+            STATE=state, DESCRIPTION="d")  # fmt: skip
+    assert p.returncode == 0, p.stderr
+    assert not (tmp_path / "gh.log").exists()

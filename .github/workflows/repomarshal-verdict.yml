@@ -7,8 +7,14 @@ name: repomarshal-verdict
 # PR head SHA. That status is the one required check (docs/guides/ci.md, "Branch protection").
 #
 # No PR code runs here. The PR head is checked out only as data for the plan; the judge is
-# installed from the PR's base commit, which is on the base branch, and every Python call is
-# isolated (-I) and runs outside the checkout.
+# installed from this workflow's own commit (the default branch), never from a commit the PR
+# chose. Every Python call is isolated (-I) and runs outside the checkout. Only PRs into the
+# default branch are judged.
+#
+# Three jobs, so that the code that judges never holds a secret or a write token:
+#   pending  (ci run requested) App token, post `pending`. No checkout, nothing installed.
+#   verdict  (ci run completed) read-only token: install the judge, judge. Outputs a state.
+#   post     (after verdict)    App token, post the state the verdict job validated.
 #
 # If the PR edits .github/workflows/ci.yml, the gate jobs ran a definition the PR chose, so the
 # judge reports UNKNOWN. If the PR renames or removes the `ci` workflow, this workflow never runs
@@ -24,35 +30,28 @@ name: repomarshal-verdict
 on:
   workflow_run:
     workflows: [ci]
-    types: [completed]
+    # requested: reset the status as soon as a new ci run starts (the old verdict no longer
+    # applies); completed: judge it. A cancelled run is judged too (its gates are missing, so
+    # it is UNKNOWN) unless a newer run for the same commit supersedes it.
+    types: [requested, completed]
 
 permissions: {}
 
-concurrency:
-  # One verdict at a time per commit, in trigger order; never cancel one half-way.
-  group: repomarshal-verdict-${{ github.event.workflow_run.head_sha }}
-  cancel-in-progress: false
+# No workflow-level concurrency: a run that skips its jobs must not displace a pending verdict.
 
 jobs:
-  verdict:
-    # A cancelled ci run was superseded by a newer run for the same commit, which brings its own
-    # verdict. Runs that are not for a pull request post nothing.
+  pending:
     if: >-
+      github.event.action == 'requested' &&
       github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion != 'cancelled'
+      github.event.workflow_run.path == '.github/workflows/ci.yml'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     environment: repomarshal-verdict
     permissions:
-      contents: read
-      actions: read # the ci run's job records and artifacts
-      pull-requests: read # the PR, its labels and comments (waivers)
-      issues: read
-      statuses: write # the only write: the commit status
+      statuses: write
     env:
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-      RUN_ID: ${{ github.event.workflow_run.id }}
-      RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
       HAS_APP: ${{ secrets.REPOMARSHAL_APP_CLIENT_ID != '' }}
     steps:
       - name: App token for the commit status
@@ -70,43 +69,69 @@ jobs:
         run: |
           gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
             -f state=pending -f context=repomarshal/verdict \
-            -f description="RepoMarshal is judging the gate results" \
+            -f description="ci is running; RepoMarshal will judge it when it completes" \
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+  verdict:
+    # Judges completed (and cancelled) pull_request runs of ci.yml. No secrets, no write scope.
+    if: >-
+      github.event.action == 'completed' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.path == '.github/workflows/ci.yml'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read # the ci run's job records and artifacts
+      pull-requests: read # the PR, its labels and comments (waivers)
+      issues: read
+    outputs:
+      state: ${{ steps.judge.outputs.state }}
+      description: ${{ steps.judge.outputs.description }}
+    env:
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+    steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }} # data only, never executed
           path: pr
-          fetch-depth: 0
+          fetch-depth: 0 # also brings this workflow's own commit (GITHUB_SHA)
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Find the PR base
-        id: base
+        # An early, independent guard; the judge checks all of this again through the API.
         working-directory: ${{ runner.temp }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          base=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/pulls" --jq \
-            "[.[] | select(.state == \"open\" and .head.sha == \"$HEAD_SHA\" and .base.repo.full_name == \"$GITHUB_REPOSITORY\")] | if length == 1 then .[0].base.sha else \"\" end")
-          ref=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/pulls" --jq \
-            "[.[] | select(.state == \"open\" and .head.sha == \"$HEAD_SHA\")] | if length == 1 then .[0].base.ref else \"\" end")
+          default=$(jq -r '.repository.default_branch // ""' "$GITHUB_EVENT_PATH")
+          pulls=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/pulls" --jq \
+            "[.[] | select(.state == \"open\" and .head.sha == \"$HEAD_SHA\" and .base.repo.full_name == \"$GITHUB_REPOSITORY\")] | if length == 1 then (.[0].base.sha + \" \" + .[0].base.ref) else \"\" end")
+          base=${pulls%% *}
+          ref=${pulls#* }
           if ! printf '%s' "$base" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "no single open PR has $HEAD_SHA as its head"; exit 1
           fi
-          # The judge is installed from the base commit: it must be on the base branch.
-          git -C "$GITHUB_WORKSPACE/pr" merge-base --is-ancestor "$base" "origin/$ref"
+          # Only PRs into the default branch are judged: the PR chooses its base branch.
+          if [ -z "$default" ] || [ "$ref" != "$default" ]; then
+            echo "the PR targets '$ref', not the default branch '$default'"; exit 1
+          fi
+          git -C "$GITHUB_WORKSPACE/pr" merge-base --is-ancestor "$base" "origin/$default"
           echo "sha=$base" >> "$GITHUB_OUTPUT"
-      - name: Install the judge (RepoMarshal) from the PR's BASE commit
+      - name: Install the judge (RepoMarshal) from the trusted workflow commit
+        # GITHUB_SHA is the default-branch commit this workflow runs from: the maintainers'
+        # judge, whatever base the PR names. Policy is still read from the PR's BASE.
         working-directory: ${{ runner.temp }}
-        env:
-          BASE_SHA: ${{ steps.base.outputs.sha }}
         run: |
           mkdir -p "$RUNNER_TEMP/rm-base"
-          git -C "$GITHUB_WORKSPACE/pr" archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/rm-base"
+          git -C "$GITHUB_WORKSPACE/pr" archive "$GITHUB_SHA" | tar -x -C "$RUNNER_TEMP/rm-base"
           python -I -m venv "$RUNNER_TEMP/rm-venv"
           "$RUNNER_TEMP/rm-venv/bin/python" -I -m pip install --quiet "$RUNNER_TEMP/rm-base"
-      - name: Install the gate tools (ruff, pytest) from BASE's dev requirements
+      - name: Install the gate tools (ruff, pytest) from the judge's dev requirements
         # Not run here; installed so tool availability, which is part of the plan, matches the
         # ci run's plan and gate jobs.
         working-directory: ${{ runner.temp }}
@@ -143,29 +168,53 @@ jobs:
           cat "$RUNNER_TEMP/repomarshal-verdict.json"
           echo "repomarshal exit code: $code (0 PASS, 1 FAIL, 2 UNKNOWN, 3 BLOCKED, 4 error)"
           exit "$code"
-      - name: post the verdict status
+      - name: Upload evidence
+        # Only the judge's own output; nothing from the PR checkout.
         if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: repomarshal-verdict-evidence
+          path: ${{ runner.temp }}/repomarshal-verdict.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  post:
+    needs: verdict
+    if: >-
+      always() &&
+      github.event.action == 'completed' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.path == '.github/workflows/ci.yml'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: repomarshal-verdict
+    permissions:
+      statuses: write
+    env:
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      HAS_APP: ${{ secrets.REPOMARSHAL_APP_CLIENT_ID != '' }}
+    steps:
+      - name: App token for the commit status
+        id: app
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.REPOMARSHAL_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REPOMARSHAL_APP_PRIVATE_KEY }}
+          permission-statuses: write
+      - name: post the verdict status
         working-directory: ${{ runner.temp }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
-          STATE: ${{ steps.judge.outputs.state }}
-          DESCRIPTION: ${{ steps.judge.outputs.description }}
+          STATE: ${{ needs.verdict.outputs.state }}
+          DESCRIPTION: ${{ needs.verdict.outputs.description }}
         run: |
           # Only the judge's own output can say success; anything missing is an error.
           case "$STATE" in
+            skip) echo "superseded by a newer ci run for this commit; posting nothing"; exit 0 ;;
             success|failure|error) ;;
             *) STATE=error; DESCRIPTION="The RepoMarshal judge did not finish; see the run" ;;
           esac
           gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
             -f state="$STATE" -f context=repomarshal/verdict -f description="$DESCRIPTION" \
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-      - name: Upload evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: repomarshal-verdict-evidence
-          path: |
-            ${{ runner.temp }}/repomarshal-verdict.json
-            pr/.repomarshal/evidence/
-          if-no-files-found: warn
-          retention-days: 30

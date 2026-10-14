@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 VERDICT = ROOT / ".github" / "workflows" / "repomarshal-verdict.yml"
 REPO = "acme/webapp"
 
+INSTALL_JUDGE = "Install the judge (RepoMarshal) from the trusted workflow commit"
 needs_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="needs jq for the gh stub")
 
 
@@ -161,7 +162,7 @@ def test_judge_is_installed_from_the_trusted_workflow_commit(tmp_path):
     _python_stub(bindir)
     rt = tmp_path / "runner_temp"
     rt.mkdir()
-    p = run(step_script("Install the judge (RepoMarshal) from the PR's BASE commit"), tmp_path,
+    p = run(step_script(INSTALL_JUDGE), tmp_path,
             bindir, BASE_SHA=str(w["evil"]), RUNNER_TEMP=str(rt),
             **default_branch_env(w))  # fmt: skip
     assert p.returncode == 0, p.stderr
@@ -292,7 +293,7 @@ def test_pr_gitattributes_do_not_change_the_installed_judge(tmp_path):
     _python_stub(bindir)
     rt = tmp_path / "runner_temp"
     rt.mkdir()
-    p = run(step_script("Install the judge (RepoMarshal) from the PR's BASE commit"), tmp_path,
+    p = run(step_script(INSTALL_JUDGE), tmp_path,
             bindir, BASE_SHA=base, GITHUB_SHA=base, RUNNER_TEMP=str(rt),
             GITHUB_WORKSPACE=str(ws))  # fmt: skip
     assert p.returncode == 0, p.stderr

@@ -82,15 +82,45 @@ def test_trusted_workflow_runs_only_from_workflow_run_of_ci():
     assert "name: ci\n" in WORKFLOW.read_text(encoding="utf-8")  # the name it listens for
 
 
-def test_trusted_workflow_permissions_are_minimal():
+def _trusted_job(name: str) -> str:
     text = _trusted()
-    assert "\npermissions: {}\n" in text
-    job = text[text.index("    permissions:\n") :]
-    block = job[: job.index("    env:")]
-    granted = sorted(line.split(":")[0].strip() for line in block.splitlines()[1:] if line.strip())
-    assert granted == ["actions", "contents", "issues", "pull-requests", "statuses"]
-    writes = [line for line in block.splitlines() if ": write" in line]
-    assert len(writes) == 1 and "statuses" in writes[0]
+    start = text.index(f"\n  {name}:\n")
+    nxt = re.search(r"\n  [a-z][a-z0-9_-]*:\n", text[start + 1 :])
+    return text[start : start + 1 + nxt.start()] if nxt else text[start:]
+
+
+def _permissions(job: str) -> dict[str, str]:
+    body = _trusted_job(job)
+    block = body[body.index("    permissions:\n") :].split("\n")[1:]
+    out = {}
+    for line in block:
+        if not line.startswith("      ") or line.startswith("       "):
+            break
+        key, _, value = line.strip().partition(":")
+        out[key] = value.split("#")[0].strip()
+    return out
+
+
+def test_trusted_workflow_permissions_are_minimal():
+    """The job that runs installed code (verdict) has no write scope and no secrets; the jobs
+    that hold the App token (pending, post) can only write statuses and run nothing installed."""
+    assert "\npermissions: {}\n" in _trusted()
+    assert _permissions("verdict") == {
+        "contents": "read", "actions": "read", "pull-requests": "read", "issues": "read"
+    }  # fmt: skip
+    for job in ("pending", "post"):
+        assert _permissions(job) == {"statuses": "write"}, job
+        body = "\n".join(_code_lines(_trusted_job(job)))
+        assert "environment: repomarshal-verdict" in body
+        for bad in ("checkout", "setup-python", "pip ", 'repomarshal" ci', "rm-venv"):
+            assert bad not in body, (job, bad)
+    verdict = "\n".join(_code_lines(_trusted_job("verdict")))
+    assert "environment:" not in verdict and "secrets." not in verdict
+
+
+def test_trusted_judge_is_installed_from_the_workflow_commit():
+    body = _trusted_job("verdict")
+    assert 'archive "$GITHUB_SHA"' in body and "BASE_SHA" not in body
 
 
 def test_trusted_workflow_never_runs_pr_code():
@@ -125,9 +155,8 @@ def test_trusted_workflow_status_matches_the_judge():
 
 def test_trusted_workflow_final_status_defaults_to_error():
     """If the judge produced no state, the posted state is error, never success."""
-    text = _trusted()
-    post = text[text.index("- name: post the verdict status") :]
-    assert "if: always()" in post.split("run:")[0]
+    post = _trusted_job("post")
+    assert "always()" in post.split("steps:")[0]
     assert "*) STATE=error" in post
 
 
