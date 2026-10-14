@@ -26,7 +26,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from repomarshal import __version__, anchor, evidence, git, planner, runner, verdict
-from repomarshal import waivers as waivers_mod
 from repomarshal.model import (
     Cost,
     DecisionStatus,
@@ -223,6 +222,8 @@ def done(
     granted: tuple = ()
     waiver_notes: tuple[str, ...] = ()
     if waivers != "none":
+        from repomarshal import waivers as waivers_mod  # lazy: keeps urllib off the `plan` path
+
         granted, waiver_notes = waivers_mod.collect_report(root, p, waivers, env)
     v, reasons = verdict.fold(
         p, tuple(results), tree_changed, p.policy.waivers_permit_pass, granted

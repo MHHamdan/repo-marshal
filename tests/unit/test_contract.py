@@ -118,7 +118,8 @@ def test_plan_and_done_paths_never_import_optional_extras():
     code = (
         "import sys, repomarshal.cli, repomarshal.api, repomarshal.planner\n"
         "bad = [m for m in sys.modules if m == 'mcp' or m.startswith('mcp.')\n"
-        "       or m in ('repomarshal.mcp_server', 'repomarshal.hooks')]\n"
+        "       or m in ('repomarshal.mcp_server', 'repomarshal.hooks',\n"
+        "                'repomarshal.waivers', 'urllib.request')]\n"
         "print(','.join(bad))"
     )
     import os
