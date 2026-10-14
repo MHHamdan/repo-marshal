@@ -11,3 +11,5 @@ Target bodies are shortened; sources and tests are synthetic.
 |---|---|---|
 | `change-src/` | `7ef2d05` "fix inline code in table cells" | edits `richlike/cells.py` |
 | `change-test/` | `905b397` "Update tests/test_cells.py" | edits `tests/test_cells.py` |
+| `change-python-floor/` | `285d9e9` "drop 3.8" | raises Poetry's interpreter floor (`python` in `[tool.poetry.dependencies]`) and edits `richlike/cells.py` |
+| `change-dependency/` | (control) | bumps `pygments` in `[tool.poetry.dependencies]` |

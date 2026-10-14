@@ -726,9 +726,28 @@ def _strip_dependencies(name: str, raw: bytes) -> Any:
         keys = TOML_DEPENDENCY_KEYS[name]
     if not isinstance(data, dict):
         return data
+    python = _poetry_python(name, data)
     for key in keys:
         _drop(data, key.split("."))
+    if python is not _NO_PYTHON:
+        # The interpreter constraint is project configuration, like requires-python: keep it
+        # in the build-config comparison (v0.7).
+        data["poetry-python-constraint"] = python
     return data
+
+
+_NO_PYTHON = object()
+
+
+def _poetry_python(name: str, data: dict[str, Any]) -> Any:
+    """The `python` entry of [tool.poetry.dependencies]: Poetry's interpreter constraint (the
+    equivalent of requires-python), which sits among the dependencies but is not one."""
+    if name != "pyproject.toml":
+        return _NO_PYTHON
+    deps = data.get("tool", {}).get("poetry", {}).get("dependencies")
+    if isinstance(deps, dict) and "python" in deps:
+        return deps["python"]
+    return _NO_PYTHON
 
 
 def is_lockfile(path: str) -> bool:
@@ -793,6 +812,11 @@ def _dependencies_of(name: str, raw: bytes) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key in keys:
         _pick(data, key.split("."), "", out)
+    deps = out.get("tool.poetry.dependencies")
+    if name == "pyproject.toml" and isinstance(deps, dict) and "python" in deps:
+        # Poetry's interpreter floor is not a dependency (v0.7: rich "drop 3.8" bumped only
+        # `python` and raised dependency.changed). It still counts as a build-config edit.
+        out["tool.poetry.dependencies"] = {k: v for k, v in deps.items() if k != "python"}
     return out
 
 

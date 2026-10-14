@@ -6,6 +6,7 @@ authors = ["Fixture"]
 
 [tool.poetry.dependencies]
 python = ">=3.9.0"
+pygments = "^2.13.0"
 
 [tool.mypy]
 files = ["richlike"]

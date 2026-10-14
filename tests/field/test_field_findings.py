@@ -389,3 +389,23 @@ def test_manifest_dependency_bump_requires_secrets_but_not_integration(tmp_path)
         assert status_of(plan, "native:secrets-diff") == DecisionStatus.REQUIRED, explain(plan)
         assert selected_expensive(plan) == ["dep_audit"], explain(plan)
         assert status_of(plan, "root:unit") == DecisionStatus.REQUIRED, explain(plan)
+
+
+# ---- v0.7: Poetry's interpreter floor is not a dependency
+
+
+def test_poetry_python_floor_is_not_a_dependency_change(tmp_path):
+    """rich 285d9e9 "drop 3.8" changed only `python` in [tool.poetry.dependencies]: no
+    dependency.changed, so no dep_audit (or secrets) demand; it is still a build-config edit."""
+    plan = build(tmp_path, "rich-makefile", "change-python-floor").plan()
+    ids = signal_ids(plan)
+    assert "dependency.changed" not in ids, explain(plan)
+    assert "build.config_changed" in ids, explain(plan)
+    assert not [d for d in decisions(plan, "dep_audit") if d.status in SELECTED], explain(plan)
+
+
+def test_poetry_dependency_bump_still_raises_dependency_changed(tmp_path):
+    """Control: a real Poetry dependency change still fires and demands dep_audit."""
+    plan = build(tmp_path, "rich-makefile", "change-dependency").plan()
+    assert "dependency.changed" in signal_ids(plan), explain(plan)
+    assert [d for d in decisions(plan, "dep_audit") if d.status in SELECTED], explain(plan)
