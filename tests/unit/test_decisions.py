@@ -273,11 +273,56 @@ def test_widening_with_code_change_keeps_scoped_reason():
     assert {r.signal for r in g["frontend:unit"].reasons} == {"coverage.unclassified"}
 
 
-def test_policy_self_modified_requires_integration_everywhere():
+def test_policy_self_modified_alone_requires_secrets_not_integration():
+    # Field test (docs/evaluation.md): elevated risk alone does not demand integration tests,
+    # which cannot verify a policy, CI or agent-config edit. It still widens and needs secrets.
     _, decisions = plan(change(mod("repomarshal.toml")))
     g = by_gate(decisions)
+    assert g["backend:integration"].status is SKIP
+    assert "code.changed under elevated risk" in g["backend:integration"].reasons[0].text
+    assert g["native:secrets-diff"].status is REQ
+    assert g["backend:unit"].status is REQ  # still widened
+
+
+def test_ci_or_agent_config_alone_does_not_require_integration():
+    for path in (".github/workflows/ci.yml", "AGENTS.md", ".github/scripts/release.sh"):
+        signals, decisions = plan(change(mod(path)))
+        assert assess_risk(signals) is Risk.ELEVATED, path
+        g = by_gate(decisions)
+        assert g["backend:integration"].status is SKIP, path
+        assert g["native:secrets-diff"].status is REQ, path
+        assert g["backend:lint"].status is REQ, path
+
+
+def test_elevated_risk_with_code_change_requires_integration_in_the_code_scope():
+    ch = change(mod(".github/workflows/ci.yml"), mod("backend/app/api/routes.py"))
+    _, decisions = plan(ch)
+    d = by_gate(decisions)["backend:integration"]
+    assert d.status is REQ
+    assert d.reasons[0].signal == "ci.changed"
+    assert d.reasons[0].text == (
+        "risk is elevated by ci.changed and code.changed; requires integration"
+    )
+    # code outside the integration gate's scope does not reach it
+    ch = change(mod(".github/workflows/ci.yml"), mod("frontend/src/api.ts"))
+    assert by_gate(plan(ch)[1])["backend:integration"].status is SKIP
+
+
+def test_tamper_signal_requires_integration():
+    ch = change(removed("frontend/src/a.test.ts", "it('works', () => {})"))
+    signals, decisions = plan(ch)
+    assert "tests.deleted" in {s.id for s in signals}
+    d = by_gate(decisions)["backend:integration"]
+    assert d.status is REQ and d.reasons[0].signal == "tests.deleted"
+
+
+def test_dependency_change_requires_integration_secrets_and_dep_audit():
+    _, decisions = plan(change(mod("backend/uv.lock")))
+    g, k = by_gate(decisions), kind_level(decisions)
     assert g["backend:integration"].status is REQ
     assert g["native:secrets-diff"].status is REQ
+    assert k[K.DEP_AUDIT].status is UNAV
+    assert g["frontend:unit"].status is REQ  # dependency.changed widens
 
 
 # --------------------------------------------------------------------------- task text (T8)
@@ -466,11 +511,11 @@ def test_deleted_test_taints_test_gates_of_its_scope_only():
 def test_skip_in_frontend_taints_frontend_test_runners():
     ch = change(mod("frontend/src/components/LoginForm.test.tsx", 'it.only("renders", () => {'))
     _signals, decisions = plan(ch)
-    assert tainted(decisions) == {
-        "frontend:unit": ("tests.skip_added",),
-        "frontend:runtime": ("tests.skip_added",),
-        "frontend:a11y": ("tests.skip_added",),
-    }
+    # A .test.tsx file is a test, not frontend.ui (field test), so runtime and a11y are not
+    # needed and only the unit runner is tainted.
+    assert tainted(decisions) == {"frontend:unit": ("tests.skip_added",)}
+    g = by_gate(decisions)
+    assert g["frontend:runtime"].status is SKIP and g["frontend:a11y"].status is SKIP
     assert {d.kind for d in decisions if d.taint} <= TEST_KINDS
 
 

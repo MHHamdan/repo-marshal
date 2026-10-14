@@ -12,6 +12,10 @@ if they exceed the budget. P3/P4 items that do not fit go to `excluded` with the
 Forecast mode (change has no files): candidates are files whose path segments or stem match task
 keywords (P3/P4 rules apply). candidate_tokens = sum over every candidate considered.
 Never include paths under .git/ or .repomarshal/; never follow symlinks outside the repo.
+Generated or huge files are never items, at any priority (P1 included): lockfiles, minified
+bundles (*.min.js, *.min.css), source maps (*.map), files under a dist/ or build/ segment, and
+files over MAX_FILE_BYTES. They go to `excluded` with the reason (e.g. "lockfile (generated)") and
+still count in candidate_tokens, so selected_tokens stays an honest estimate of what is read.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from pathlib import Path, PurePosixPath
 
 from repomarshal.git import list_files_at, read_at
 from repomarshal.model import ChangeSet, ContextItem, ContextPlan, FileStatus, Signal
+from repomarshal.signals import is_lockfile
 from repomarshal.skills import DOMAIN_KEYWORDS
 
 _FORBIDDEN_TOP = frozenset({".git", ".repomarshal"})
@@ -29,6 +34,11 @@ _PY = frozenset({".py"})
 _JS = frozenset({".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"})
 _TEST_DIRS = frozenset({"tests", "test", "__tests__"})
 _ROOT_INSTRUCTIONS = ("AGENTS.md", "README.md")
+# Generated or huge files: never read in full.
+MAX_FILE_BYTES = 200 * 1024
+_GENERATED_SUFFIXES = ((".min.js", "minified bundle"), (".min.css", "minified bundle"),
+                       (".map", "source map"))  # fmt: skip
+_BUILD_OUTPUT_DIRS = frozenset({"dist", "build"})
 
 # Generic path tokens that say nothing about what a change is about.
 _PATH_STOP = frozenset(
@@ -88,6 +98,21 @@ def _est_tokens(repo: Path, path: str) -> int | None:
         return target.stat().st_size // 4
     except (OSError, ValueError):
         return None
+
+
+def _generated(path: str, est_tokens: int) -> str | None:
+    """Why `path` is not full-text context (generated or huge), or None."""
+    lower = path.lower()
+    if is_lockfile(path):
+        return "lockfile (generated)"
+    for suffix, what in _GENERATED_SUFFIXES:
+        if lower.endswith(suffix):
+            return f"{what} (generated)"
+    if _BUILD_OUTPUT_DIRS.intersection(lower.split("/")[:-1]):
+        return "build output (generated)"
+    if est_tokens * 4 > MAX_FILE_BYTES:
+        return f"file over {MAX_FILE_BYTES // 1024} KB"
+    return None
 
 
 def _family(path: str) -> frozenset[str] | None:
@@ -268,7 +293,11 @@ def select_context(
                 continue  # missing, or refused (symlink escape): not a candidate
             est = 0  # changed path we will not read (e.g. a symlink pointing outside)
         candidate_tokens += est
-        if priority <= 2 or selected + est <= budget:
+        generated = _generated(path, est)
+        if generated:
+            reason = f"{why}; excluded: {generated} ({est} est. tokens)"
+            excluded.append(ContextItem(path, reason, priority, est))
+        elif priority <= 2 or selected + est <= budget:
             items.append(ContextItem(path, why, priority, est))
             selected += est
         else:

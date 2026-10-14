@@ -114,6 +114,22 @@ def test_frontend_ui(path, expected):
 
 
 @pytest.mark.parametrize(
+    "path",
+    [
+        "tests/persistAsync.test.tsx",
+        "web/src/Button.spec.jsx",
+        "web/src/components/__tests__/Button.tsx",
+        "frontend/src/components/LoginForm.test.tsx",
+        "tests/fixtures/page.html",
+    ],
+)
+def test_test_files_are_not_frontend_ui(path):
+    s = ids(cs(f(path)))
+    assert "frontend.ui" not in s
+    assert "tests.changed" in s
+
+
+@pytest.mark.parametrize(
     "path,expected",
     [
         ("backend/tests/test_refresh.py", True),
@@ -233,7 +249,8 @@ def test_build_config_by_name_always_fires(path):
 
 def test_unclassified_and_deleted_files():
     s = ids(cs(f("data/blob.bin", D), f("package-lock.json"), f("src/app.py", D)))
-    assert s["coverage.unclassified"] == ("data/blob.bin", "package-lock.json")
+    assert s["coverage.unclassified"] == ("data/blob.bin",)
+    assert s["dependency.changed"] == ("package-lock.json",)  # a lockfile is classified
     assert s["code.changed"] == ("src/app.py",)  # deleted files count
 
 
@@ -384,6 +401,88 @@ def test_manifest_fail_closed_cases(repo):
     assert _build(r, base, f("backend/pyproject.toml", D))  # deleted manifest
     # no base at all (unborn / empty tree): treated as added
     assert "build.config_changed" in ids(cs(f("frontend/package.json")), repo=r.root)
+
+
+# --------------------------------------------------------------------------- dependency.changed
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "web/yarn.lock",
+        "bun.lock",
+        "bun.lockb",
+        "poetry.lock",
+        "uv.lock",
+        "Pipfile.lock",
+        "Cargo.lock",
+        "go.sum",
+        "requirements.txt",
+        "backend/requirements-dev.txt",
+    ],
+)
+def test_lockfile_is_dependency_changed(path):
+    out = {s.id: s for s in sig.evaluate_signals(NOWHERE, cs(f(path)), Policy())}
+    assert out["dependency.changed"].files == (path,)
+    assert out["dependency.changed"].domain == "dependencies"
+    assert out["dependency.changed"].risk is Risk.STANDARD
+    assert "coverage.unclassified" not in out
+    assert "build.config_changed" not in out
+    assert "dependency.changed" in sig.WIDENING
+
+
+def _deps(r: GitRepo, base: str, *files: ChangedFile) -> bool:
+    return "dependency.changed" in ids(cs(*files, base=base), repo=r.root)
+
+
+def test_package_json_dependency_bump_is_dependency_changed(repo):
+    r, base = repo
+    pkg = json.loads(json.dumps(PKG))
+    pkg["dependencies"]["react"] = "18.3.1"
+    r.write("frontend/package.json", json.dumps(pkg, indent=4))
+    s = ids(cs(f("frontend/package.json"), base=base), repo=r.root)
+    assert s["dependency.changed"] == ("frontend/package.json",)
+    assert "build.config_changed" not in s and "coverage.unclassified" not in s
+
+
+def test_package_json_script_edit_is_not_dependency_changed(repo):
+    r, base = repo
+    pkg = json.loads(json.dumps(PKG))
+    pkg["scripts"]["test"] = "exit 0"
+    r.write("frontend/package.json", json.dumps(pkg))
+    s = ids(cs(f("frontend/package.json"), base=base), repo=r.root)
+    assert "dependency.changed" not in s and "build.config_changed" in s
+    # both kinds of edit: both signals
+    pkg["devDependencies"]["vitest"] = "2.0.0"
+    r.write("frontend/package.json", json.dumps(pkg))
+    s = ids(cs(f("frontend/package.json"), base=base), repo=r.root)
+    assert {"dependency.changed", "build.config_changed"} <= set(s)
+
+
+def test_pyproject_dependency_sections(repo):
+    r, base = repo
+    r.write("backend/pyproject.toml", PYPROJECT.replace("8.0", "8.1"))  # optional-dependencies
+    assert _deps(r, base, f("backend/pyproject.toml"))
+    r.write("backend/pyproject.toml", PYPROJECT.replace("100", "120"))  # tool.ruff only
+    assert not _deps(r, base, f("backend/pyproject.toml"))
+    r.write("backend/pyproject.toml", PYPROJECT + '\n[dependency-groups]\ntest = ["x"]\n')
+    assert _deps(r, base, f("backend/pyproject.toml"))
+    poetry = '[tool.poetry.group.dev.dependencies]\npytest = "^8"\n'
+    r.write("backend/pyproject.toml", PYPROJECT + "\n" + poetry)
+    assert _deps(r, base, f("backend/pyproject.toml"))
+
+
+def test_dependency_manifest_fail_closed_and_added(repo):
+    r, base = repo
+    r.write("frontend/package.json", "{ not json")
+    assert _deps(r, base, f("frontend/package.json"))  # unparsable
+    r.write("other/package.json", '{"name": "x"}')
+    assert not _deps(r, base, f("other/package.json", A))  # added, no dependency section
+    r.write("other/package.json", '{"dependencies": {"qs": "1"}}')
+    assert _deps(r, base, f("other/package.json", A))  # added with dependencies
+    assert _deps(r, base, f("backend/pyproject.toml", D))  # deleted, had dependencies
 
 
 # --------------------------------------------------------------------------- task text
@@ -883,8 +982,15 @@ def _ids_for(path: str, status=FileStatus.MODIFIED) -> set[str]:
 
 
 def test_ci_changed_fires_for_ci_config():
-    for p in (".github/workflows/ci.yml", ".gitlab-ci.yml", ".circleci/config.yml"):
+    for p in (
+        ".github/workflows/ci.yml",
+        ".gitlab-ci.yml",
+        ".circleci/config.yml",
+        ".github/scripts/npm-stage-publish.sh",  # run by a workflow
+        ".github/actions/setup/action.yml",  # composite action
+    ):
         assert "ci.changed" in _ids_for(p), p
+    assert "ci.changed" not in _ids_for(".github/CODEOWNERS")
     assert "ci.changed" not in _ids_for("docs/ci.md")
     assert "ci.changed" in sig.WIDENING
 

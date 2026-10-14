@@ -31,6 +31,14 @@ Matching notes (the exact pattern sets are the constants below):
 - build.config_changed compares BASE (git.read_at) with the working tree (git.read_worktree) for
   dependency-aware manifests and ignores the dependency sections. A manifest that is added,
   deleted, unreadable or unparsable on either side always fires (fail closed).
+- dependency.changed fires for a lockfile (LOCKFILE_NAMES, LOCKFILE_GLOBS), or for a
+  package.json / pyproject.toml / Cargo.toml whose dependency sections (the keys that
+  build.config_changed ignores) differ between BASE and the working tree. An added or deleted
+  manifest fires when it has a dependency section; an unreadable or unparsable one always fires
+  (fail closed). It is widening: a dependency can change what any scope's lint, typecheck and
+  unit gates see.
+- frontend.ui never fires for a test file (`*.test.tsx`, `__tests__/x.jsx`): a test renders
+  components but ships no UI. It stays tests.changed / code.changed.
 
 v0.2 test-tamper signals (roadmap SHOULD #2; threat T2). All three are elevated and widening, and
 decisions.decide_gates taints the test-running gates whose scope covers their files. A "test
@@ -112,6 +120,7 @@ from repomarshal.model import (
 WIDENING: frozenset[str] = frozenset(
     {
         "build.config_changed",
+        "dependency.changed",
         "coverage.unclassified",
         "policy.self_modified",
         "ci.changed",
@@ -255,8 +264,26 @@ TOML_DEPENDENCY_KEYS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# ci.changed: CI configuration (an agent narrowing or disabling CI is a T4 threat).
-CI_PREFIXES = (".github/workflows/", ".circleci/", ".buildkite/", ".gitlab/ci/")
+# dependency.changed: lockfiles (matched on the lower-cased file name).
+LOCKFILE_NAMES: frozenset[str] = frozenset(
+    {
+        "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock",
+        "bun.lockb", "poetry.lock", "uv.lock", "pipfile.lock", "pdm.lock", "cargo.lock", "go.sum",
+        "gemfile.lock", "composer.lock",
+    }
+)  # fmt: skip
+LOCKFILE_GLOBS: tuple[str, ...] = ("requirements*.txt",)
+
+# ci.changed: CI configuration (an agent narrowing or disabling CI is a T4 threat). Scripts and
+# composite actions under .github/ are run by workflows, so they are CI too.
+CI_PREFIXES = (
+    ".github/workflows/",
+    ".github/scripts/",
+    ".github/actions/",
+    ".circleci/",
+    ".buildkite/",
+    ".gitlab/ci/",
+)
 CI_FILES = frozenset({".gitlab-ci.yml", "Jenkinsfile", "azure-pipelines.yml", ".travis.yml"})
 
 # agent.config_changed: agent instructions, settings and hooks (an agent removing its own stop
@@ -594,6 +621,8 @@ def _is_code(path: str) -> bool:
 
 
 def _is_frontend(path: str) -> bool:
+    if _is_test(path):
+        return False  # a test renders components but ships no UI
     dirs, _name, _stem, ext = _parts(path)
     return ext in FRONTEND_EXTENSIONS or any(d in FRONTEND_SEGMENTS for d in dirs)
 
@@ -680,6 +709,78 @@ def _strip_dependencies(name: str, raw: bytes) -> Any:
     for key in keys:
         _drop(data, key.split("."))
     return data
+
+
+def is_lockfile(path: str) -> bool:
+    """True for a dependency lockfile (by file name)."""
+    name = _parts(path)[1]
+    return name in LOCKFILE_NAMES or any(fnmatch.fnmatchcase(name, g) for g in LOCKFILE_GLOBS)
+
+
+def _dependency_changed(f: ChangedFile, ctx: _Ctx) -> tuple[str, ...]:
+    locks = tuple(p for p in _candidates(f) if is_lockfile(p))
+    if locks:
+        return locks
+    manifests = tuple(
+        p
+        for p in _candidates(f)
+        if (n := _parts(p)[1]) == "package.json" or n in TOML_DEPENDENCY_KEYS
+    )
+    return manifests if manifests and _dependency_edit(f, ctx) else ()
+
+
+def _dependency_edit(f: ChangedFile, ctx: _Ctx) -> bool:
+    """True when the dependency sections of a manifest differ between BASE and the worktree."""
+    name = _parts(f.path)[1]
+    old_name = _parts(f.old_path or f.path)[1]
+    try:
+        before = (
+            None
+            if f.status == FileStatus.ADDED
+            else git.read_at(ctx.repo, ctx.base, f.old_path or f.path)
+        )
+        after = None if f.status == FileStatus.DELETED else git.read_worktree(ctx.repo, f.path)
+    except (GitError, OSError):
+        return True
+    if before is None and f.status != FileStatus.ADDED:
+        return True  # unreadable at BASE
+    if after is None and f.status != FileStatus.DELETED:
+        return True  # unreadable in the worktree
+    try:
+        old = _dependencies_of(old_name, before) if before is not None else {}
+        new = _dependencies_of(name, after) if after is not None else {}
+    except (ValueError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return True  # unparsable on either side: fail closed
+    return old != new
+
+
+def _dependencies_of(name: str, raw: bytes) -> dict[str, Any]:
+    """The dependency sections of a manifest: {concrete dotted key: value}."""
+    if name == "package.json":
+        data = json.loads(raw.decode("utf-8"))
+        keys: tuple[str, ...] = PACKAGE_JSON_DEPENDENCY_KEYS
+    elif name in TOML_DEPENDENCY_KEYS:
+        data = tomllib.loads(raw.decode("utf-8"))
+        keys = TOML_DEPENDENCY_KEYS[name]
+    else:
+        return {}
+    out: dict[str, Any] = {}
+    for key in keys:
+        _pick(data, key.split("."), "", out)
+    return out
+
+
+def _pick(node: Any, path: list[str], prefix: str, out: dict[str, Any]) -> None:
+    if not isinstance(node, dict) or not path:
+        return
+    head, rest = path[0], path[1:]
+    targets = list(node) if head == "*" else [head] if head in node else []
+    for k in targets:
+        dotted = f"{prefix}{k}"
+        if rest:
+            _pick(node[k], rest, dotted + ".", out)
+        else:
+            out[dotted] = node[k]
 
 
 def _drop(node: Any, path: list[str]) -> None:
@@ -1550,6 +1651,14 @@ CATALOGUE: tuple[Rule, ...] = (
         Risk.STANDARD,
         "non-dependency edit to a manifest or tool config",
         _build_config_changed,
+    ),
+    Rule(
+        "dependency.changed",
+        "dependencies",
+        Risk.STANDARD,
+        "lockfile changed, or dependency sections of package.json / pyproject.toml / Cargo.toml "
+        "differ between BASE and the working tree",
+        _dependency_changed,
     ),
     Rule(
         "policy.self_modified",
