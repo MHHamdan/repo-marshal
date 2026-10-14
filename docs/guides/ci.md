@@ -34,6 +34,14 @@ installed, that gate is UNAVAILABLE and the verdict is **UNKNOWN**, never PASS. 
 toolchain a developer would use (`pip install -e ".[dev]"`, `npm ci`, ...) before running `done`.
 `repomarshal done --dry-run` lists the gates that would run without running them.
 
+**Order matters.** Install RepoMarshal first, in its own virtual environment, before any step that
+runs the pull request's code. A project install (`pip install -e .` runs the PR's build backend,
+`npm ci` runs install scripts) executes that code as the job's user, and code that runs before the
+judge could plant `git replace` refs or git config that change what BASE looks like. `done` itself
+reads the BASE policy, CODEOWNERS and waivers before the first gate runs. Where you can, install
+tools without executing PR code (from BASE's requirements, `npm ci --ignore-scripts`), as this
+repository's own dogfood job does.
+
 ## 3. Exit codes
 
 | Exit | Verdict | Job result |
@@ -154,16 +162,19 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      # Install RepoMarshal (pinned to a commit) and every tool your gates run.
+      # Install RepoMarshal (pinned to a commit) FIRST, in its own venv, then every tool your
+      # gates run (see "Order matters" in section 2).
       - run: |
-          python -m pip install "repomarshal @ git+https://github.com/MHHamdan/repo-marshal@<commit-sha>"
-          python -m pip install -e ".[dev]"   # your project's toolchain: ruff, pytest, ...
+          python -m venv "$RUNNER_TEMP/rm-venv"
+          "$RUNNER_TEMP/rm-venv/bin/python" -m pip install \
+            "repomarshal @ git+https://github.com/MHHamdan/repo-marshal@<commit-sha>"
+      - run: python -m pip install -e ".[dev]"   # your project's toolchain: ruff, pytest, ...
       - name: repomarshal done
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set +e
-          repomarshal done --base "$BASE_SHA" --json > repomarshal-done.json
+          "$RUNNER_TEMP/rm-venv/bin/repomarshal" done --base "$BASE_SHA" --json > repomarshal-done.json
           code=$?
           set -e
           cat repomarshal-done.json
