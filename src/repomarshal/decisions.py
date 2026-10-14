@@ -24,8 +24,14 @@ Implementation notes (precisions within the contract):
   UNAVAILABLE). Within a kind, gate decisions come first (by id), then the kind-level one.
 - Widening makes FORMAT/LINT/TYPECHECK/UNIT needed as well as relevant in every scope: a
   manifest or unknown file can change what those gates check.
-- Elevated risk triggers integration and secrets. The trigger files are the elevated signal's
-  files, except for task.* and WIDENING signals, which trigger every scope.
+- Elevated risk triggers secrets. The trigger files are the elevated signal's files, except for
+  task.* and WIDENING signals, which trigger every scope.
+- Integration (field test, docs/evaluation.md): elevated risk on its own does not demand
+  integration tests, which cannot verify a CI, agent-config or policy edit. Integration is needed
+  for security.auth_path, db.migration or dependency.changed (and their task.* analogues); for a
+  test-tamper signal (every scope, as for widening); or when risk is elevated AND code.changed
+  fires, scoped to the code.changed files. CI/agent/policy edits alone still widen the cheap and
+  standard gates and still require the secrets gate.
 - task.* triggers (TASK_TRIGGERS below) map task domains onto kinds; they can only add a
   trigger, so task text can never remove a requirement (threat T8).
 
@@ -95,7 +101,7 @@ DIFF_TRIGGERS: dict[GateKind, tuple[str, ...]] = {
 TASK_TRIGGERS: dict[GateKind, tuple[str, ...]] = {
     GateKind.DOCS: ("task.docs",),
     GateKind.UNIT: ("task.tests",),
-    GateKind.INTEGRATION: ("task.data", "task.dependencies"),  # + any elevated task signal
+    GateKind.INTEGRATION: ("task.data", "task.dependencies", "task.security"),  # + elevated+code
     GateKind.SECRETS: ("task.security", "task.dependencies"),
     GateKind.DEP_AUDIT: ("task.dependencies",),
     GateKind.SECURITY_SCAN: ("task.security",),
@@ -111,7 +117,8 @@ NOT_NEEDED: dict[GateKind, str] = {
     GateKind.TYPECHECK: "no code.changed or tests.changed signal",
     GateKind.UNIT: "no code.changed or tests.changed signal",
     GateKind.INTEGRATION: (
-        "risk is not elevated and no security.auth_path, db.migration or dependency.changed signal"
+        "no security.auth_path, db.migration, dependency.changed or test-tamper signal, and no "
+        "code.changed under elevated risk"
     ),
     GateKind.SECRETS: (
         "risk is not elevated and no security.*, dependency.changed or agent.config_changed signal"
@@ -129,6 +136,7 @@ class _Trigger:
     signal: str
     files: frozenset[str] | None  # None = every scope
     text: str  # used when files is None, or for a kind-level decision
+    always_text: bool = False  # use text for scoped gates too (files are not the signal's own)
 
 
 def assess_risk(signals: tuple[Signal, ...]) -> Risk:
@@ -174,7 +182,10 @@ def _triggers(kind: GateKind, by_id: dict[str, Signal], risk: Risk) -> list[_Tri
             ),
         )
 
-    if kind in (GateKind.INTEGRATION, GateKind.SECRETS) and risk is Risk.ELEVATED:
+    if kind is GateKind.INTEGRATION:
+        _integration_triggers(out, by_id, risk)
+
+    if kind is GateKind.SECRETS and risk is Risk.ELEVATED:
         for sid, s in by_id.items():
             if s.risk is not Risk.ELEVATED or sid in out:
                 continue
@@ -190,6 +201,28 @@ def _triggers(kind: GateKind, by_id: dict[str, Signal], risk: Risk) -> list[_Tri
     return [out[k] for k in sorted(out)]
 
 
+def _integration_triggers(out: dict[str, _Trigger], by_id: dict[str, Signal], risk: Risk) -> None:
+    """Integration beyond DIFF_TRIGGERS: a test-tamper signal (every scope), or elevated risk
+    together with code.changed (the code files). Elevated risk alone (a CI, agent-config or
+    policy edit) does not demand integration tests: they cannot verify such an edit."""
+    for sid in TAMPER_SIGNALS:
+        if sid in by_id and sid not in out:
+            out[sid] = _Trigger(sid, None, f"{sid} requires integration")
+    code = by_id.get("code.changed")
+    if risk is not Risk.ELEVATED or code is None:
+        return
+    for sid, s in by_id.items():
+        if s.risk is not Risk.ELEVATED or sid in out:
+            continue
+        src = " (from task text)" if _is_task(s) else ""
+        out[sid] = _Trigger(
+            sid,
+            frozenset(code.files),
+            f"risk is elevated by {sid}{src} and code.changed; requires integration",
+            always_text=True,
+        )
+
+
 def _covers(g: Gate, t: _Trigger) -> bool:
     return t.files is None or g.scope == "" or any(g.covers(f) for f in t.files)
 
@@ -199,7 +232,8 @@ def _scope_label(scope: str) -> str:
 
 
 def _gate_reason(g: Gate, t: _Trigger) -> Reason:
-    if t.files is None or g.scope == "":  # a root-scope gate covers every changed file
+    # a root-scope gate covers every changed file
+    if t.files is None or g.scope == "" or t.always_text:
         return Reason(t.text, t.signal)
     return Reason(f"{t.signal} in {g.scope}", t.signal)
 
