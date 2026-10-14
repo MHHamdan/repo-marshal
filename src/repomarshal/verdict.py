@@ -48,6 +48,7 @@ def fold(
     unknowns: list[str] = []
     passes = 0
     counted = 0
+    executed = 0  # gates RepoMarshal ran that passed on their own, without a waiver
     waived: list[str] = []
     for d in plan.gates:
         label = d.gate_id or f"{d.kind.value} (no gate)"
@@ -79,6 +80,7 @@ def fold(
             fails.append(f"{label}: FAIL ({r.reason})")
         elif r.status == ResultStatus.PASS:
             passes += 1
+            executed += 1
         elif r.status in (ResultStatus.UNKNOWN, ResultStatus.WAIVED) and waiver is not None:
             if waivers_permit_pass:
                 passes += 1
@@ -103,6 +105,10 @@ def fold(
         )
     if counted == 0:
         unknowns.append("nothing was verified: the plan has no required gates")
+    elif executed == 0 and not fails:
+        # v0.3 fail-open review #3: a waiver accepts one gap, it is not evidence. A PASS needs at
+        # least one gate that actually ran and passed; "nothing verified" is never waivable.
+        unknowns.append("nothing was verified: no required gate ran and passed (waivers alone)")
     if fails:
         return Verdict.FAIL, tuple(fails + unknowns + waived)
     if unknowns:

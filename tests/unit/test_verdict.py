@@ -106,11 +106,18 @@ def test_waived_status_without_waiver_record_is_unknown():
 
 
 def test_waiver_needs_policy():
-    p = plan(dec("a"))
-    unknown = (res("a", R.UNKNOWN),)
-    assert fold(p, unknown, False, waivers=(_waiver("a"),))[0] is Verdict.UNKNOWN
-    v, reasons = fold(p, unknown, False, waivers_permit_pass=True, waivers=(_waiver("a"),))
+    p = plan(dec("a"), dec("b"))
+    results = (res("a", R.UNKNOWN), res("b", R.PASS))
+    assert fold(p, results, False, waivers=(_waiver("a"),))[0] is Verdict.UNKNOWN
+    v, reasons = fold(p, results, False, waivers_permit_pass=True, waivers=(_waiver("a"),))
     assert v is Verdict.PASS and any("WAIVED by maintainer" in r for r in reasons)
+
+
+def test_waivers_alone_are_not_a_pass():
+    """v0.3 fail-open review #3: with every counted decision waived, nothing was verified."""
+    p = plan(dec("a"))
+    v, reasons = fold(p, (res("a", R.UNKNOWN),), False, True, (_waiver("a"),))
+    assert v is Verdict.UNKNOWN and any("waivers alone" in r for r in reasons)
 
 
 def test_unavailable_kind_level_decision_can_be_waived_by_kind():

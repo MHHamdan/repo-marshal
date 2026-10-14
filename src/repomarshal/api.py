@@ -182,6 +182,18 @@ def done(
             would_run=tuple(d.gate_id for d in required),
         )
 
+    # v0.3 human override: only the caller decides where waivers may come from (the hook and the
+    # MCP server pass "none"); waivers.collect decides which ones are genuine. Collected BEFORE any
+    # gate runs (v0.3 fail-open review #1): gates execute the change's code as the same user, so
+    # anything read afterwards (the GitHub event file, git objects, even this module's source on
+    # disk) could have been rewritten by the change being judged.
+    granted: tuple = ()
+    waiver_notes: tuple[str, ...] = ()
+    if waivers != "none":
+        from repomarshal import waivers as waivers_mod  # lazy: keeps urllib off the `plan` path
+
+        granted, waiver_notes = waivers_mod.collect_report(root, p, waivers, env)
+
     results: list[GateResult] = []
     tree_changed = before != p.change.tree_digest
     for d in required:
@@ -217,14 +229,6 @@ def done(
         results.append(result)
     after = git.tree_digest(root, base=base_sha)
     tree_changed = tree_changed or before != after
-    # v0.3 human override: only the caller decides where waivers may come from (the hook and the
-    # MCP server pass "none"); waivers.collect decides which ones are genuine.
-    granted: tuple = ()
-    waiver_notes: tuple[str, ...] = ()
-    if waivers != "none":
-        from repomarshal import waivers as waivers_mod  # lazy: keeps urllib off the `plan` path
-
-        granted, waiver_notes = waivers_mod.collect_report(root, p, waivers, env)
     v, reasons = verdict.fold(
         p, tuple(results), tree_changed, p.policy.waivers_permit_pass, granted
     )
