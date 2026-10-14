@@ -14,6 +14,8 @@ Accepted format (version 1):
     [completion]
     waivers_permit_pass = false         # bool
     allow_author_waivers = false        # bool (v0.4): the PR author may grant a waiver
+    waiver_signers = ""                 # path (v0.8): SSH allowed-signers file at BASE; when set,
+                                        #   every label waiver needs a signed code (T40)
     [gates.<id>]                        # id: [a-z0-9][a-z0-9._-]*
     kind = "security_scan"              # a model.GateKind value
     argv = ["bandit", "-r", "app"]      # non-empty array of strings; a string is an error
@@ -57,7 +59,7 @@ TOP_KEYS = frozenset({"version", "context", "skills", "completion", "gates", "si
 SECTION_KEYS = {
     "context": frozenset({"token_budget"}),
     "skills": frozenset({"max"}),
-    "completion": frozenset({"waivers_permit_pass", "allow_author_waivers"}),
+    "completion": frozenset({"waivers_permit_pass", "allow_author_waivers", "waiver_signers"}),
 }
 GATE_KEYS = frozenset({"kind", "argv", "scope", "cwd", "cost", "timeout_s"})
 SIGNAL_KEYS = frozenset({"id", "domain", "risk", "paths"})
@@ -122,6 +124,13 @@ def _build(data: dict[str, Any], source: str, digest: str) -> Policy:
     if not isinstance(author, bool):
         errors.append(f"completion.allow_author_waivers: must be a boolean, got {author!r}")
 
+    signers = sections["completion"].get("waiver_signers", Policy.waiver_signers)
+    if not isinstance(signers, str) or (signers and not _safe_relpath(signers)):
+        errors.append(
+            "completion.waiver_signers: must be a relative file path inside the repository "
+            f"(no '..', no leading '/'), got {signers!r}"
+        )
+
     gates = _gates(data.get("gates"), errors) if "gates" in data else ()
     signals = _signals(data.get("signals"), errors) if "signals" in data else ()
 
@@ -133,6 +142,7 @@ def _build(data: dict[str, Any], source: str, digest: str) -> Policy:
         skills_max=skills_max,
         waivers_permit_pass=waivers,
         allow_author_waivers=author,
+        waiver_signers=signers,
         gates=gates,
         signals=signals,
         source=source,
@@ -303,3 +313,11 @@ def _signals(raw: Any, errors: list[str]) -> tuple[SignalRuleSpec, ...]:
         if len(errors) == n_errors:
             specs.append(SignalRuleSpec(id=sid, domain=domain, risk=Risk(risk), paths=tuple(paths)))
     return tuple(specs)
+
+
+def _safe_relpath(path: str) -> bool:
+    if len(path) > 255 or path != path.strip() or any(c in path for c in "\\\0\n\r"):
+        return False
+    if path.startswith("/") or path.endswith("/"):
+        return False
+    return all(part not in ("", ".", "..") for part in path.split("/"))

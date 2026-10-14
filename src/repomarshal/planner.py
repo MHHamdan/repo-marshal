@@ -52,6 +52,7 @@ def compile_plan(
             digest=pol.digest,
             waivers_permit_pass=pol.waivers_permit_pass,
             allow_author_waivers=pol.allow_author_waivers,
+            waiver_signers=pol.waiver_signers,
         ),
         generator={"name": "repomarshal", "version": __version__},
     ).with_hash()

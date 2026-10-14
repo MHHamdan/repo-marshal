@@ -9,6 +9,10 @@ The recordings (tests/fixtures/github_api/, see its README) were made through th
 app. The "human" variant sets performed_via_github_app to null, as GitHub does for a person's
 action on github.com; the "missing" variant removes the key. Nothing else is changed except the
 label name and comment body, which are pointed at a target of the test plan.
+
+v0.8 (T40): an author waiver also needs an SSH-signed code, so with allow_author the BASE policy
+here names an allowed-signers file and every reason comment is signed. The identity rules above
+still have to reject what they rejected before, signature or not.
 """
 
 from __future__ import annotations
@@ -23,7 +27,10 @@ import pytest
 from helpers import GitRepo
 from repomarshal import waivers
 from repomarshal.model import WaiverSource
-from tests.unit.test_waivers import FakeGitHub, github_env, make_plan, write_event
+from sshsig import SIGNERS_PATH, make_key, needs_ssh_keygen, signed_body
+from tests.unit.test_waivers import HEAD, FakeGitHub, github_env, make_plan, write_event
+
+pytestmark = needs_ssh_keygen
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "github_api"
 MAINTAINER = "MHHamdan"  # the recorded actor: the only CODEOWNER, and the PR author
@@ -56,11 +63,22 @@ def label_events(how: str) -> list[dict]:
     return [ev]
 
 
+_KEY: list = []
+
+
+def _key():
+    if not _KEY:
+        import tempfile
+
+        _KEY.append(make_key(Path(tempfile.mkdtemp(prefix="rm-identity-")), "maintainer"))
+    return _KEY[0]
+
+
 def reason_comments(how: str) -> list[dict]:
     (c,) = _recorded("app_comments.json")
     assert c["user"]["login"] == MAINTAINER
     c = _via(c, how)
-    c["body"] = f"repomarshal-waive {TARGET}: {REASON}"
+    c["body"] = signed_body(_key(), "acme/webapp", 7, HEAD, TARGET, REASON)
     return [c]
 
 
@@ -74,6 +92,7 @@ def gh():
 def repo(tmp_path: Path) -> GitRepo:
     r = GitRepo(tmp_path / "repo")
     r.write(".github/CODEOWNERS", f"* @{MAINTAINER}\n")
+    r.write(SIGNERS_PATH, _key().allowed(MAINTAINER))
     r.write("backend/app.py", "x = 1\n")
     r.commit("BASE")
     return r
@@ -87,8 +106,12 @@ def _no_proxy(monkeypatch):
 
 def collect(repo: GitRepo, gh: FakeGitHub, tmp_path: Path, allow_author: bool):
     plan = make_plan(repo)
+    signers = SIGNERS_PATH if allow_author else ""
     plan = dataclasses.replace(
-        plan, policy=dataclasses.replace(plan.policy, allow_author_waivers=allow_author)
+        plan,
+        policy=dataclasses.replace(
+            plan.policy, allow_author_waivers=allow_author, waiver_signers=signers
+        ),
     )
     event = write_event(tmp_path / "event.json", author=MAINTAINER)
     env = github_env({}, gh.url, event)
@@ -115,7 +138,7 @@ def test_human_author_waiver_is_allowed_with_the_policy(repo, gh, tmp_path):
     gh.pr(events=label_events(HUMAN), comments=reason_comments(HUMAN))
     found, notes = collect(repo, gh, tmp_path, allow_author=True)
     assert [(w.target, w.identity, w.source, w.reason) for w in found] == [
-        (TARGET, MAINTAINER, WaiverSource.GITHUB_LABEL, REASON)
+        (TARGET, f"{MAINTAINER} (ssh-signed)", WaiverSource.GITHUB_LABEL, REASON)
     ], notes
 
 

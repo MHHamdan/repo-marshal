@@ -343,3 +343,21 @@ def test_this_repository_enables_author_waivers():
 
     text = (Path(__file__).resolve().parents[2] / "repomarshal.toml").read_text()
     assert "allow_author_waivers = true" in text and "waivers_permit_pass = true" in text
+
+
+def test_waiver_signers_defaults_empty_and_is_parsed(tmp_path):
+    repo, base = _repo(tmp_path, "version = 1\n")
+    assert load_policy(repo.root, base).waiver_signers == ""
+    text = 'version = 1\n[completion]\nwaiver_signers = ".github/allowed_signers"\n'
+    repo2, base2 = _repo(tmp_path / "b", text)
+    assert load_policy(repo2.root, base2).waiver_signers == ".github/allowed_signers"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["true", '"/etc/ssh/allowed"', '"../outside"', '"a/../b"', '"dir/"', '" x"', '"a//b"',
+     '"a\\\\b"', '"./x"'],
+)  # fmt: skip
+def test_waiver_signers_must_be_a_safe_relative_path(tmp_path, value):
+    errors = _errors(tmp_path, f"version = 1\n[completion]\nwaiver_signers = {value}\n")
+    assert any("completion.waiver_signers" in e for e in errors), errors

@@ -49,6 +49,9 @@ version = 1
 # waivers_permit_pass = false
 # Whether the PR author may grant a waiver (needed when the only maintainer opens every PR).
 # allow_author_waivers = false
+# An SSH allowed-signers file (path at BASE). When set, every label waiver also needs a code signed
+# with a listed key, so an agent using your gh login cannot grant one (docs/guides/waivers.md).
+# waiver_signers = ".github/repomarshal_allowed_signers"
 
 # Extra gates. Each runs an argv list (never a shell) from cwd inside the repository. Ids use
 # [a-z0-9][a-z0-9._-]*. A policy gate replaces a detected gate of the same scope and kind.

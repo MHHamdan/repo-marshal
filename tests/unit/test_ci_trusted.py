@@ -5,11 +5,13 @@ GitHub API (workflow run, PR lookup, job records) is a FakeGitHub."""
 from __future__ import annotations
 
 import json
+import shutil
 
 import pytest
 
 from repomarshal import ci
 from repomarshal.model import Verdict
+from sshsig import SIGNERS_PATH, make_key, signed_body
 from tests.unit.test_ci_split import PR, record, statuses
 from tests.unit.test_waivers import FakeGitHub
 
@@ -262,12 +264,20 @@ def test_cli_trusted_verdict_writes_the_status(tmp_path, gh, monkeypatch, capsys
 def _workflow_pr(tmp_path, monkeypatch, permit: bool = True) -> PR:
     import tests.unit.test_ci_split as split
 
-    extra = "[completion]\nwaivers_permit_pass = true\nallow_author_waivers = true\n"
+    extra = (
+        "[completion]\nwaivers_permit_pass = true\nallow_author_waivers = true\n"
+        f'waiver_signers = "{SIGNERS_PATH}"\n'
+    )
     monkeypatch.setattr(split, "POLICY", split.POLICY + (extra if permit else ""))
+    if shutil.which("ssh-keygen") is None:
+        pytest.skip("needs ssh-keygen")
+    key = make_key(tmp_path / "keys", "maintainer")
     pr = PR(tmp_path)
+    pr.key = key
     pr.r.write(".github/CODEOWNERS", "* @MHHamdan\n")
     pr.r.git("checkout", "-q", "main")
     pr.r.write(".github/CODEOWNERS", "* @MHHamdan\n")
+    pr.r.write(SIGNERS_PATH, key.allowed("MHHamdan"))
     pr.base = pr.r.commit("BASE: CODEOWNERS")
     pr.r.git("checkout", "-q", "pr")
     pr.r.git("merge", "-q", "--no-edit", "main")
@@ -276,11 +286,13 @@ def _workflow_pr(tmp_path, monkeypatch, permit: bool = True) -> PR:
     return pr
 
 
-def _grant(gh: FakeGitHub, *targets: str, via=None, blob: str = "") -> None:
+def _grant(gh: FakeGitHub, pr: PR, *targets: str, via=None, blob: str = "") -> None:
+    """Labels plus one reason comment, signed for the PR head (v0.8: author waivers need it)."""
     from tests.unit.test_waivers import comment, label
 
     kw = {} if via is None else {"via": via}
-    lines = "\n".join(f"repomarshal-waive {t}: I reviewed the ci.yml diff {blob}" for t in targets)
+    reason = f"I reviewed the ci.yml diff {blob}".strip()
+    lines = "".join(signed_body(pr.key, REPO, 3, pr.pr_head, t, reason) for t in targets)
     gh.pr(
         events=[label(t, "MHHamdan", n=i + 1, **kw) for i, t in enumerate(targets)],
         comments=[comment("MHHamdan", lines)],
@@ -311,7 +323,7 @@ def test_reviewed_ci_yml_change_binds_with_a_human_waiver(tmp_path, gh, monkeypa
     pr = _workflow_pr(tmp_path, monkeypatch)
     serve(gh, pr)
     # A CI change with code is elevated risk, so integration is required and unavailable here.
-    _grant(gh, ci.WORKFLOW_WAIVER, "integration", blob=_blob(pr))
+    _grant(gh, pr, ci.WORKFLOW_WAIVER, "integration", blob=_blob(pr))
     results, jobs = run_gates(pr)
     res = trusted_github(pr, gh, results, jobs)
     assert res.verdict is Verdict.PASS, res.reasons
@@ -323,7 +335,11 @@ def test_ci_yml_waiver_through_an_app_is_rejected(tmp_path, gh, monkeypatch):
     pr = _workflow_pr(tmp_path, monkeypatch)
     serve(gh, pr)
     _grant(
-        gh, ci.WORKFLOW_WAIVER, "integration", via={"performed_via_github_app": {"slug": "claude"}}
+        gh,
+        pr,
+        ci.WORKFLOW_WAIVER,
+        "integration",
+        via={"performed_via_github_app": {"slug": "claude"}},
     )
     results, jobs = run_gates(pr)
     res = trusted_github(pr, gh, results, jobs)
@@ -334,7 +350,7 @@ def test_ci_yml_waiver_through_an_app_is_rejected(tmp_path, gh, monkeypatch):
 def test_ci_yml_waiver_needs_the_base_policy(tmp_path, gh, monkeypatch):
     pr = _workflow_pr(tmp_path, monkeypatch, permit=False)
     serve(gh, pr)
-    _grant(gh, ci.WORKFLOW_WAIVER, "integration")
+    _grant(gh, pr, ci.WORKFLOW_WAIVER, "integration")
     results, jobs = run_gates(pr)
     assert trusted_github(pr, gh, results, jobs).verdict is Verdict.UNKNOWN
 
@@ -342,7 +358,7 @@ def test_ci_yml_waiver_needs_the_base_policy(tmp_path, gh, monkeypatch):
 def test_ci_yml_change_without_waiver_is_unknown_even_with_other_waivers(tmp_path, gh, monkeypatch):
     pr = _workflow_pr(tmp_path, monkeypatch)
     serve(gh, pr)
-    _grant(gh, "tests", "integration")
+    _grant(gh, pr, "tests", "integration")
     results, jobs = run_gates(pr)
     res = trusted_github(pr, gh, results, jobs)
     assert res.verdict is Verdict.UNKNOWN
@@ -354,7 +370,7 @@ def test_ci_workflow_waiver_must_name_the_reviewed_file(tmp_path, gh, monkeypatc
     does not accept the change."""
     pr = _workflow_pr(tmp_path, monkeypatch)
     serve(gh, pr)
-    _grant(gh, ci.WORKFLOW_WAIVER, "integration", blob="0123456789ab")
+    _grant(gh, pr, ci.WORKFLOW_WAIVER, "integration", blob="0123456789ab")
     results, jobs = run_gates(pr)
     res = trusted_github(pr, gh, results, jobs)
     assert res.verdict is Verdict.UNKNOWN

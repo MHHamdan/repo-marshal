@@ -44,6 +44,13 @@ Modes (api.done(..., waivers=mode)):
       same human with a line `repomarshal-waive <target>: <reason>`; if none, the waiver is
       rejected. (Label descriptions are NOT used: they are repository-wide and any writer can
       edit them.)
+    * signed codes (v0.8, T40): a local agent using the maintainer's own `gh` login or token
+      makes events with `performed_via_github_app: null`, exactly like the maintainer in the web
+      UI. When the BASE policy sets completion.waiver_signers (an SSH allowed-signers file read
+      at BASE), the reason comment must also hold a line `repomarshal-waive-sig <target> <sig>`
+      whose SSH signature (waiversig.message: repository, PR, head SHA, target, reason) verifies
+      for the commenter's login. An author waiver (allow_author_waivers) is accepted ONLY with
+      such a signature: without waiver_signers it is rejected.
   CODEOWNERS for a target = the users on the `*` rule, plus users who own every path the target
   covers (last matching rule wins per path, as on GitHub). Team (@org/team) and e-mail owners are
   not resolved and never count. Any network or API error yields NO waivers (fail closed); a
@@ -69,7 +76,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from repomarshal import git
+from repomarshal import git, waiversig
 from repomarshal.model import (
     DecisionStatus,
     Plan,
@@ -597,11 +604,72 @@ def _collect_github(
     gh = _GitHub(api_url, token)
     out: list[Waiver] = []
     allow_author = bool(getattr(plan.policy, "allow_author_waivers", False))
-    out += _label_waivers(gh, repo_name, number, author, targets, owners, notes, allow_author)
+    signing = _Signing.at_base(root, plan, repo_name, number, head_sha)
+    out += _label_waivers(
+        gh, repo_name, number, author, targets, owners, notes, allow_author, signing
+    )
     out += _review_waivers(
         gh, repo_name, number, author, head_sha, targets, owners, notes, allow_author
     )
     return out
+
+
+class _Signing:
+    """Signed waiver codes (v0.8, T40). `path` is the BASE policy's waiver_signers ("" = not
+    required); `signers` the file's bytes at BASE, or None when it is missing there."""
+
+    def __init__(self, path: str, signers: bytes | None, repo: str, number: int, head: Any):
+        self.path = path
+        self.signers = signers
+        self.repo = repo
+        self.number = number
+        self.head = head if isinstance(head, str) and _SHA40.fullmatch(head) else None
+
+    @classmethod
+    def at_base(cls, root: Path, plan: Plan, repo: str, number: int, head: Any) -> _Signing:
+        path = str(getattr(plan.policy, "waiver_signers", "") or "")
+        raw = git.read_at(root, plan.change.base, path) if path else None
+        return cls(path, raw, repo, number, head)
+
+    @property
+    def required(self) -> bool:
+        return bool(self.path)
+
+    def problem(self) -> str | None:
+        """Why no signature can be verified at all, or None."""
+        if self.signers is None:
+            return f"the allowed-signers file {self.path!r} does not exist at BASE"
+        if self.head is None:
+            return "the pull request head SHA is unknown"
+        return None
+
+    def check(self, login: str, target: str, reason: str, body: Any) -> tuple[bool, str]:
+        token = _sig_from(body, target)
+        if not token:
+            return False, f"no '{waiversig.SIG_KEYWORD} {target} <signature>' line"
+        try:
+            msg = waiversig.message(self.repo, self.number, self.head or "", target, reason)
+        except waiversig.SignatureError as e:
+            return False, str(e)
+        ok, why = waiversig.verify(self.signers or b"", login, msg, token)
+        return ok, why if ok else f"signature does not verify for {login} on this head: {why}"
+
+
+_SHA40 = re.compile(r"[0-9a-f]{40}")
+
+
+def _sig_from(body: Any, target: str) -> str:
+    """The token on the first prose line `repomarshal-waive-sig <target> <token>`, or ""."""
+    if not isinstance(body, str):
+        return ""
+    pattern = re.compile(
+        rf"^ {{0,3}}{re.escape(waiversig.SIG_KEYWORD)}[ \t]+{re.escape(target)}[ \t]+(\S+)[ \t]*$"
+    )
+    for line in _prose_lines(body):
+        m = pattern.match(line)
+        if m:
+            return m.group(1)
+    return ""
 
 
 def _label_waivers(
@@ -613,6 +681,7 @@ def _label_waivers(
     owners: CodeOwners,
     notes: list[str],
     allow_author: bool = False,
+    signing: _Signing | None = None,
 ) -> list[Waiver]:
     events = gh.paged(f"/repos/{repo}/issues/{number}/events")
     # GitHub label names are case-insensitive: key everything by the lower-cased name.
@@ -663,12 +732,25 @@ def _label_waivers(
                 "not set completion.allow_author_waivers; rejected"
             )
             continue
+        is_author = login.lower() == author.lower()
+        signed = signing is not None and signing.required
+        if is_author and not signed:
+            notes.append(
+                f"label {name!r}: an author waiver needs a signed code (v0.8, T40): a local agent "
+                f"using {login}'s own gh login or token is indistinguishable from {login}. Set "
+                "completion.waiver_signers in the BASE policy; rejected"
+            )
+            continue
         if not owners.owns(login, targets[target]) and not gh.has_admin_or_maintain(repo, login):
             notes.append(
                 f"label {name!r}: {login} is neither a CODEOWNER for it nor an admin/maintainer"
             )
             continue
-        reason, ref, app_reason, edited = "", "", False, False
+        if signed and signing is not None and signing.problem():
+            notes.append(f"label {name!r}: signed codes are required but {signing.problem()}; "
+                         "rejected")  # fmt: skip
+            continue
+        reason, ref, app_reason, edited, sig_why = "", "", False, False, ""
         for c in comments:  # chronological: keep the latest matching comment
             if (_human(c.get("user")) or "").lower() != login.lower():
                 continue
@@ -684,7 +766,18 @@ def _label_waivers(
                 # (v0.4 review #5).
                 edited = True
                 continue
+            if signed and signing is not None:
+                ok, why = signing.check(login, target, found, c.get("body"))
+                if not ok:
+                    sig_why = why
+                    continue
             reason, ref = found, str(c.get("html_url") or "")
+        if not reason and sig_why:
+            notes.append(
+                f"label {name!r}: no reason comment by {login} carries a valid signed code "
+                f"({sig_why}); post a new comment signed for the current head; rejected"
+            )
+            continue
         if not reason and edited:
             notes.append(
                 f"label {name!r}: the reason comment by {login} was edited after it was posted; "
@@ -703,11 +796,13 @@ def _label_waivers(
                 f"'{LINE_KEYWORD} {target}: <reason>'; rejected"
             )
             continue
+        if signed:
+            notes.append(f"label {name!r}: SSH-signed code by {login} verified")
         out.append(
             Waiver(
                 target=target,
                 reason=reason,
-                identity=login,
+                identity=f"{login} (ssh-signed)" if signed else login,
                 source=WaiverSource.GITHUB_LABEL,
                 granted_at=str(ev.get("created_at") or ""),
                 reference=ref or f"{repo}#{number} label {name}",

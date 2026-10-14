@@ -491,6 +491,9 @@
         },
         "allow_author_waivers": {
           "type": "boolean"
+        },
+        "waiver_signers": {
+          "type": "string"
         }
       },
       "required": [

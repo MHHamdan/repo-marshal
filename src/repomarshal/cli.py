@@ -95,6 +95,19 @@ def _parser() -> argparse.ArgumentParser:
     wv.add_argument("--reason", required=True, help="why this gate may be accepted unverified")
     wv.add_argument("--repo", default=".", help="repository path (default: .)")
 
+    ws = sub.add_parser(
+        "waive-sign",
+        help="print a PR waiver comment with an SSH-signed code (v0.8; needs your signing key)",
+    )
+    ws.add_argument("target", help="waiver target (gate id or kind), as in the label")
+    ws.add_argument("--reason", required=True, help="one-line reason; signed exactly as given")
+    ws.add_argument("--repository", required=True, help="OWNER/REPO of the pull request")
+    ws.add_argument("--pr", required=True, type=int, help="pull request number")
+    ws.add_argument("--head", required=True, help="the PR's current head commit SHA (40 hex)")
+    ws.add_argument(
+        "--key", required=True, help="SSH signing key: private key, or its .pub for ssh-agent/FIDO"
+    )
+
     dr = sub.add_parser("doctor", help="report the detected stack, gates, providers and config")
     dr.add_argument("--repo", default=".", help="repository path (default: .)")
     dr.add_argument("--json", action="store_true", help="machine-readable output")
@@ -164,6 +177,10 @@ def main(argv: list[str] | None = None) -> int:
         from repomarshal import waivers
 
         return waivers.cli_waive(args)
+    if args.command == "waive-sign":
+        from repomarshal import waiversig
+
+        return waiversig.cli_sign(args)
     if args.command == "doctor":
         from repomarshal import doctor
 

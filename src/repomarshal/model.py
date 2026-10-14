@@ -244,6 +244,7 @@ class Policy:
     skills_max: int = 3
     waivers_permit_pass: bool = False
     allow_author_waivers: bool = False
+    waiver_signers: str = ""  # v0.8: allowed-signers path at BASE; "" = signatures not required
     gates: tuple[Gate, ...] = ()  # from [gates.<id>]; already validated
     signals: tuple[SignalRuleSpec, ...] = ()
     source: str = "default"  # "default" or "base:<sha>:repomarshal.toml"
@@ -323,6 +324,8 @@ class PolicyRef:
     waivers_permit_pass: bool = False
     # v0.4: whether the PR author may grant a waiver (solo-maintainer repositories).
     allow_author_waivers: bool = False
+    # v0.8 (T40): BASE path of the SSH allowed-signers file for signed waiver codes, or "".
+    waiver_signers: str = ""
 
 
 @dataclass(frozen=True)

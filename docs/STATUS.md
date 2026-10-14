@@ -4,36 +4,31 @@ _Last updated: 2026-10-14_
 
 ## Current phase
 
-**v0.7 is in review (PR #6)** on branch `claude/v0.7`, from `origin/main` at 3986cdc. PRs #3, #4 and
-#5 (v0.4–v0.6) are merged. Scope is deliberately small:
+**v0.8 is in progress** on branch `claude/v0.8`, stacked on `claude/v0.7` (PR #6, still open:
+the owner has not yet added the waiver comment and labels, so there is no live waiver result).
 
-1. **Poetry false positive: done.** The `python` entry of `[tool.poetry.dependencies]` no longer
-   raises `dependency.changed`; it still counts as a build-config edit. Fixture
-   `rich-makefile/change-python-floor`, plus the control `change-dependency`.
-2. **27-commit re-run** (`docs/evaluation.md` §11):
-   - precision 0.727 → 0.742 frozen, 0.848 → 0.866 adjusted;
-   - recall stays 1.000;
-   - cases with an unneeded expensive gate: 3 → 2 of 27.
-3. **Gate-environment test fix.** `test_planted_unchecked_pyc_is_not_executed` failed when the
-   suite ran as a gate (the inherited `PYTHONPYCACHEPREFIX` redirected `cache_from_source`), so
-   main's judge reported FAIL. Fixed in f5515d5.
-4. **Live waiver test: PR #6 is open.** Main's v0.6 judge (`3986cdc`), run locally on this branch,
-   gives UNKNOWN with three waivable items:
-   - `root:unit`, tainted by `tests.discovery_narrowed` (fixture pyproject `testpaths`);
-   - `integration`, required but unavailable;
-   - `dep_audit`, required but unavailable.
+v0.8 closes **T40** (recorded as T40 because T36 and T37 were already used in
+`docs/security/threat-model.md`): a local agent using the owner's `gh` login or PAT makes label
+and comment events with `performed_via_github_app: null`, so it could self-grant author waivers.
 
-   The owner was asked to post this comment first (unedited, as prose):
-   `repomarshal-waive root:unit: ...`, `repomarshal-waive integration: ...` and
-   `repomarshal-waive dep_audit: ...`. Then add the labels `repomarshal-waive:root:unit`,
-   `repomarshal-waive:integration` and `repomarshal-waive:dep_audit`.
+Done so far:
+- `src/repomarshal/waiversig.py`: SSH-signed waiver codes. The signed message binds repository,
+  PR number, head SHA, target and reason; `ssh-keygen -Y verify` checks it in the namespace
+  `repomarshal-waiver` against the allowed-signers file at BASE, principal = commenter's login.
+- Policy key `completion.waiver_signers` (path at BASE). When set, every label waiver needs a
+  `repomarshal-waive-sig <target> <sig>` line in its reason comment. Author waivers are accepted
+  ONLY with signatures (breaking change, deliberate).
+- CLI `repomarshal waive-sign` prints the comment to post.
+- Tests: `tests/unit/test_waiversig.py`, `tests/unit/test_waiver_signed.py`; the v0.4 identity
+  tests and the trusted ci-workflow tests now sign their comments.
 
 ## Next step
 
-1. Watch the CI re-runs on PR #6 after the labels are added. Record the advisory `dogfood` verdict
-   and the `repomarshal/verdict` status here. Expected: PASS with three author waivers.
-2. If a waiver is rejected, read the judge's `notes` in the dogfood log before changing anything.
-3. After the owner merges, ship 0.1.0 (`docs/guides/release.md`).
+1. Fresh fail-open reviewer on the v0.8 code (`tests/review_v08/`), fix what it finds.
+2. Docs: threat model T40 with the alternatives weighed, waivers guide, ci guide, roadmap.
+3. This repository's policy: `waiver_signers = ".github/repomarshal_allowed_signers"`, the owner
+   adds their public key line.
+4. Open the v0.8 PR and tell the owner the key setup and the signed-waiver steps.
 
 ## Upstream repos inspected
 
