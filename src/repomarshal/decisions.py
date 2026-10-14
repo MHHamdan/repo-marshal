@@ -66,6 +66,7 @@ import dataclasses
 import re
 from dataclasses import dataclass
 
+from repomarshal import native
 from repomarshal.model import (
     KIND_ORDER,
     WHEN_CONFIGURED,
@@ -100,7 +101,8 @@ TAINTED_STATUSES: frozenset[DecisionStatus] = frozenset(
 SELECTED: frozenset[DecisionStatus] = TAINTED_STATUSES
 
 # A URL carrying credentials (`https://user:token@host/...`) in an added lockfile line.
-_CREDENTIAL_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@")
+# Any user-info in a URL (token@, :token@, user:pass@): v0.6 review F6.
+_CREDENTIAL_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/@]*@")
 
 # Diff signals that trigger each kind (files-scoped triggers).
 DIFF_TRIGGERS: dict[GateKind, tuple[str, ...]] = {
@@ -336,9 +338,16 @@ def _lockfile_only(dep: Signal, change: ChangeSet) -> tuple[str, ...]:
     for f in involved:
         if not all(is_pure_lockfile(p) for p in (f.path, f.old_path) if p is not None):
             return ()
+        # Only an existing lockfile being updated: a new (or renamed-in) file merely named like
+        # a lockfile is not one (v0.6 review F7).
+        if f.status not in (FileStatus.MODIFIED, FileStatus.DELETED):
+            return ()
         if f.status is not FileStatus.DELETED and (f.binary or f.truncated):
             return ()
         if any(_CREDENTIAL_URL.search(line) for line in f.added):
+            return ()
+        # Whatever the native secrets gate would flag keeps the gate (v0.6 review F6).
+        if any(rx.search(line) for _, rx in native.SECRET_PATTERNS for line in f.added):
             return ()
     return tuple(sorted(files))
 
