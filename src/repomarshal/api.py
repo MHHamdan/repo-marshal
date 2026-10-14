@@ -30,6 +30,8 @@ from repomarshal.model import (
     Cost,
     DecisionStatus,
     EvidenceRecord,
+    Gate,
+    GateDecision,
     GateResult,
     Plan,
     PolicyInvalid,
@@ -112,14 +114,29 @@ def _nested_problem(root: Path) -> str | None:
     return None
 
 
-def done(
+@dataclass(frozen=True)
+class Prepared:
+    """A binding plan ready for gates: what done() and the split CI steps (ci.py) share."""
+
+    root: Path
+    plan: Plan
+    base_sha: str | None
+    before: str  # tree digest taken before the plan was compiled
+    inventory: dict[str, Gate]
+    required: tuple[GateDecision, ...]  # REQUIRED decisions with a gate id, cheap first
+
+
+def prepare(
     repo: str | Path,
     task: str | None = None,
     base: str | None = None,
     env: Mapping[str, str] | None = None,
-    dry_run: bool = False,
-    waivers: str = "none",
-) -> DoneResult:
+    remember: bool = True,
+    record: bool = False,
+) -> Prepared | DoneResult:
+    """Steps 1-2 of done(): a Prepared plan, or the DoneResult that ends the run early (nested
+    repository, invalid policy, untrustworthy plan, no change, duplicate gate ids). The early
+    result is recorded (evidence written) only when `record` is set and a plan exists."""
     root = git.repo_root(repo)
     nested = _nested_problem(root)
     if nested:
@@ -140,7 +157,7 @@ def done(
         return DoneResult(
             Verdict.UNKNOWN, (f"could not compile a trustworthy plan: {e}",), None, None, None
         )
-    if not dry_run:
+    if remember:
         anchor.remember(root, base_sha, explicit=base is not None)
 
     # Fail-open review #1: with no change there is nothing to verify, whatever the task says.
@@ -149,9 +166,9 @@ def done(
             "nothing was verified: no change relative to BASE "
             f"{p.change.base or '(none)'} ({base_how})",
         )
-        if dry_run:
-            return DoneResult(Verdict.UNKNOWN, reasons, p, None, None)
-        return _record(root, p, (), before, before, Verdict.UNKNOWN, reasons)
+        if record:
+            return _record(root, p, (), before, before, Verdict.UNKNOWN, reasons)
+        return DoneResult(Verdict.UNKNOWN, reasons, p, None, None)
 
     # Fail-open review #11: ids must identify gates uniquely, or one gate could stand in for
     # another. Duplicates are an internal inconsistency: fail closed.
@@ -159,9 +176,9 @@ def done(
     duplicates = sorted({i for i in ids if ids.count(i) > 1})
     if duplicates:
         reasons = (f"duplicate gate ids {duplicates}: cannot tell which gate a result belongs to",)
-        if dry_run:
-            return DoneResult(Verdict.UNKNOWN, reasons, p, None, None)
-        return _record(root, p, (), before, before, Verdict.UNKNOWN, reasons)
+        if record:
+            return _record(root, p, (), before, before, Verdict.UNKNOWN, reasons)
+        return DoneResult(Verdict.UNKNOWN, reasons, p, None, None)
 
     inv = {g.id: g for g in p.inventory}
     required = [d for d in p.gates if d.status == DecisionStatus.REQUIRED and d.gate_id]
@@ -172,65 +189,103 @@ def done(
             else (9, d.gate_id)
         )
     )
+    return Prepared(root, p, base_sha, before, inv, tuple(required))
+
+
+def adjust(d: GateDecision, result: GateResult, before: str, now: str) -> GateResult:
+    """The per-gate rules applied to every result, wherever the gate ran: test-tamper taint, and
+    a tree that changed while the gate ran. Both only ever DOWNGRADE a PASS (v0.2 review #6)."""
+    if d.taint:
+        # v0.2 tamper signals: the change weakens what this gate runs (deleted or skipped
+        # tests, narrowed discovery), so its result cannot vouch for the change.
+        taint = "; ".join(t.text for t in d.taint)
+        if result.status in (ResultStatus.PASS, ResultStatus.WAIVED):
+            result = dataclasses.replace(
+                result,
+                status=ResultStatus.UNKNOWN,
+                reason=f"{taint}; was: {result.status.value} ({result.reason})",
+            )
+        else:
+            result = dataclasses.replace(result, reason=f"{result.reason}; also: {taint}")
+    # Fail-open review #3: check the tree after EVERY gate. A gate that swaps files for later
+    # gates (and a final gate that restores them) would otherwise go unnoticed.
+    if now != before and result.status in (ResultStatus.PASS, ResultStatus.WAIVED):
+        result = dataclasses.replace(
+            result,
+            status=ResultStatus.UNKNOWN,
+            reason=f"gate modified the working tree (digest {before[:12]} -> {now[:12]}); "
+            f"was: {result.status.value} ({result.reason})",
+        )
+    return result
+
+
+def collect_waivers(
+    prep: Prepared, waivers: str, env: Mapping[str, str] | None
+) -> tuple[tuple, tuple[str, ...]]:
+    """v0.3 human override: only the caller decides where waivers may come from (the hook and
+    the MCP server pass "none"); waivers.collect decides which ones are genuine. Call it BEFORE
+    any gate runs (v0.3 fail-open review #1): gates execute the change's code as the same user,
+    so anything read afterwards (the GitHub event file, git objects, even this module's source
+    on disk) could have been rewritten by the change being judged."""
+    if waivers == "none":
+        return (), ()
+    from repomarshal import waivers as waivers_mod  # lazy: keeps urllib off the `plan` path
+
+    return waivers_mod.collect_report(prep.root, prep.plan, waivers, env)
+
+
+def finish(
+    prep: Prepared,
+    results: list[GateResult],
+    after: str,
+    tree_changed: bool,
+    granted: tuple = (),
+    waiver_notes: tuple[str, ...] = (),
+    extra_reasons: tuple[str, ...] = (),
+) -> DoneResult:
+    """Steps 5-6 of done(): fold the verdict and write the evidence record."""
+    p = prep.plan
+    v, reasons = verdict.fold(
+        p, tuple(results), tree_changed, p.policy.waivers_permit_pass, granted
+    )
+    reasons = tuple(extra_reasons) + tuple(reasons) + tuple(f"waivers: {n}" for n in waiver_notes)
+    return _record(prep.root, p, results, prep.before, after, v, reasons, granted)
+
+
+def done(
+    repo: str | Path,
+    task: str | None = None,
+    base: str | None = None,
+    env: Mapping[str, str] | None = None,
+    dry_run: bool = False,
+    waivers: str = "none",
+) -> DoneResult:
+    prep = prepare(repo, task=task, base=base, env=env, remember=not dry_run, record=not dry_run)
+    if isinstance(prep, DoneResult):
+        return prep
     if dry_run:
         return DoneResult(
             Verdict.UNKNOWN,
             ("dry run: no gates were executed",),
-            p,
+            prep.plan,
             None,
             None,
-            would_run=tuple(d.gate_id for d in required),
+            would_run=tuple(d.gate_id for d in prep.required),
         )
 
-    # v0.3 human override: only the caller decides where waivers may come from (the hook and the
-    # MCP server pass "none"); waivers.collect decides which ones are genuine. Collected BEFORE any
-    # gate runs (v0.3 fail-open review #1): gates execute the change's code as the same user, so
-    # anything read afterwards (the GitHub event file, git objects, even this module's source on
-    # disk) could have been rewritten by the change being judged.
-    granted: tuple = ()
-    waiver_notes: tuple[str, ...] = ()
-    if waivers != "none":
-        from repomarshal import waivers as waivers_mod  # lazy: keeps urllib off the `plan` path
+    granted, waiver_notes = collect_waivers(prep, waivers, env)
 
-        granted, waiver_notes = waivers_mod.collect_report(root, p, waivers, env)
-
+    root, p, before = prep.root, prep.plan, prep.before
     results: list[GateResult] = []
     tree_changed = before != p.change.tree_digest
-    for d in required:
-        gate = inv.get(d.gate_id)
+    for d in prep.required:
+        gate = prep.inventory.get(d.gate_id)
         if gate is None:
             continue  # verdict.fold reports a REQUIRED gate without a result as UNKNOWN
         result = runner.run_gate(root, gate, p.change, env)
-        if d.taint:
-            # v0.2 tamper signals: the change weakens what this gate runs (deleted or skipped
-            # tests, narrowed discovery), so its result cannot vouch for the change. Taint only
-            # ever DOWNGRADES a PASS; a FAIL stays FAIL (v0.2 fail-open review #6).
-            taint = "; ".join(t.text for t in d.taint)
-            if result.status in (ResultStatus.PASS, ResultStatus.WAIVED):
-                result = dataclasses.replace(
-                    result,
-                    status=ResultStatus.UNKNOWN,
-                    reason=f"{taint}; was: {result.status.value} ({result.reason})",
-                )
-            else:
-                result = dataclasses.replace(result, reason=f"{result.reason}; also: {taint}")
-        # Fail-open review #3: check the tree after EVERY gate. A gate that swaps files for later
-        # gates (and a final gate that restores them) would otherwise go unnoticed.
-        now = git.tree_digest(root, base=base_sha)
-        if now != before:
-            tree_changed = True
-        if now != before and result.status in (ResultStatus.PASS, ResultStatus.WAIVED):
-            result = dataclasses.replace(
-                result,
-                status=ResultStatus.UNKNOWN,
-                reason=f"gate modified the working tree (digest {before[:12]} -> {now[:12]}); "
-                f"was: {result.status.value} ({result.reason})",
-            )
-        results.append(result)
-    after = git.tree_digest(root, base=base_sha)
+        now = git.tree_digest(root, base=prep.base_sha)
+        tree_changed = tree_changed or now != before
+        results.append(adjust(d, result, before, now))
+    after = git.tree_digest(root, base=prep.base_sha)
     tree_changed = tree_changed or before != after
-    v, reasons = verdict.fold(
-        p, tuple(results), tree_changed, p.policy.waivers_permit_pass, granted
-    )
-    reasons = tuple(reasons) + tuple(f"waivers: {n}" for n in waiver_notes)
-    return _record(root, p, results, before, after, v, reasons, granted)
+    return finish(prep, results, after, tree_changed, granted, waiver_notes)

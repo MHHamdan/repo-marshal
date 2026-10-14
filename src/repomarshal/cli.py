@@ -15,6 +15,11 @@ v0.2 (dispatch only; behaviour lives in the named modules):
     repomarshal done --hook claude-code [--repo PATH]  -> repomarshal.hooks.run(...) (stdin)
     repomarshal mcp                                    -> repomarshal.mcp_server.main()  (extra)
 The hook and MCP paths are imported lazily so `plan` and `done` never load them.
+
+v0.4 split CI (threat T26; behaviour in repomarshal.ci):
+    repomarshal ci plan    --base SHA [--out FILE] [--github-output]   exit 0 when written
+    repomarshal ci gate    --base SHA --gate ID --expect JSON --out FILE  exit 0/1/2
+    repomarshal ci verdict --base SHA --expect JSON --results DIR [--json]  exit = verdict
 """
 
 from __future__ import annotations
@@ -92,6 +97,31 @@ def _parser() -> argparse.ArgumentParser:
     dr.add_argument("--json", action="store_true", help="machine-readable output")
 
     sub.add_parser("mcp", help="serve plan/done/explain over MCP stdio (needs repomarshal[mcp])")
+
+    ci = sub.add_parser("ci", help="split CI verification: plan, isolated gate jobs, verdict")
+    cisub = ci.add_subparsers(dest="ci_command", required=True)
+    cp = cisub.add_parser("plan", help="plan job: the plan, binding data and the gate matrix")
+    cg = cisub.add_parser("gate", help="gate job: run one isolated gate, write its raw result")
+    cv = cisub.add_parser("verdict", help="verdict job: bind the gate results and fold")
+    for c in (cp, cg, cv):
+        c.add_argument("--repo", default=".", help="repository path (default: .)")
+        c.add_argument("--base", required=True, help="BASE commit (the PR base SHA)")
+    for c in (cp, cv):
+        c.add_argument(
+            "--waivers", choices=["none", "github"], default="github", help="waiver source"
+        )
+    cp.add_argument("--out", default=None, help="write the plan job output JSON here")
+    cp.add_argument(
+        "--github-output",
+        action="store_true",
+        help="also write ok/expect/matrix/count to the file named by $GITHUB_OUTPUT",
+    )
+    cg.add_argument("--gate", required=True, help="gate id from the plan job's matrix")
+    for c in (cg, cv):
+        c.add_argument("--expect", default="", help="the plan job's `expect` output (JSON)")
+    cg.add_argument("--out", required=True, help="result file to write")
+    cv.add_argument("--results", required=True, help="directory with rm-gate-<i>/result.json")
+    cv.add_argument("--json", action="store_true", help="machine-readable output")
     return p
 
 
@@ -117,6 +147,13 @@ def main(argv: list[str] | None = None) -> int:
         from repomarshal import doctor
 
         return doctor.run(args)
+    if args.command == "ci":
+        try:
+            return _ci(args)
+        except Exception:  # noqa: BLE001 - internal errors must never look like PASS
+            traceback.print_exc()
+            print("repomarshal ci: internal error (exit 4)", file=sys.stderr)
+            return EXIT_INTERNAL_ERROR
     try:
         if args.command == "plan":
             return _plan(args)
@@ -179,4 +216,62 @@ def _done(args: argparse.Namespace) -> int:
     else:
         print(render.done_text(r))
         print(f"\n{EvidenceRecord.advisory}")
+    return r.verdict.exit_code
+
+
+def _expect(text: str) -> dict | None:
+    try:
+        data = json.loads(text) if text else None
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _ci(args: argparse.Namespace) -> int:
+    import os
+    from pathlib import Path
+
+    from repomarshal import ci
+
+    env = dict(os.environ)
+    if args.ci_command == "plan":
+        out = ci.plan_step(args.repo, args.base, env, waivers=args.waivers)
+        text = json.dumps(out, indent=2, sort_keys=True)
+        if args.out:
+            Path(args.out).write_text(text + "\n", encoding="utf-8")
+        print(text)
+        if args.github_output:
+            target = env.get("GITHUB_OUTPUT")
+            if not target:
+                print("repomarshal ci: GITHUB_OUTPUT is not set", file=sys.stderr)
+                return EXIT_INTERNAL_ERROR
+            with open(target, "a", encoding="utf-8") as f:
+                f.write(f"ok={'true' if out['ok'] else 'false'}\n")
+                f.write(f"expect={json.dumps(out['expect'], separators=(',', ':'))}\n")
+                f.write(f"matrix={json.dumps(out['matrix'], separators=(',', ':'))}\n")
+                f.write(f"count={len(out['matrix'])}\n")
+        return 0
+    if args.ci_command == "gate":
+        expect = _expect(args.expect)
+        if expect is None:
+            print("repomarshal ci gate: --expect is not a JSON object", file=sys.stderr)
+            return 2
+        return ci.gate_step(args.repo, args.base, args.gate, expect, Path(args.out), env)
+    r = ci.verdict_step(
+        args.repo, args.base, _expect(args.expect), Path(args.results), env, waivers=args.waivers
+    )
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "verdict": r.verdict.value,
+                    "reasons": list(r.reasons),
+                    "evidence_path": str(r.evidence_path) if r.evidence_path else None,
+                    "record": to_dict(r.record) if r.record else None,
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(render.done_text(r))
     return r.verdict.exit_code

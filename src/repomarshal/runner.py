@@ -87,6 +87,11 @@ def run_gate(
             f"internal error while running gate: {type(e).__name__}: {e}",
             argv=gate.argv,
         )
+    return apply_definition_changed(gate, result)
+
+
+def apply_definition_changed(gate: Gate, result: GateResult) -> GateResult:
+    """M14: a gate whose definition changed in the diff vouches for nothing, whatever it says."""
     if gate.definition_changed and result.status != ResultStatus.UNKNOWN:
         result = GateResult(
             gate.id,
