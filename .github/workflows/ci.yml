@@ -3,13 +3,9 @@ on:
   push:
   pull_request:
     # labeled/unlabeled: a `repomarshal-waive:<target>` label change re-runs the dogfood verdict.
+    # (v0.4: reviews no longer grant waivers, so review events no longer trigger a run. Post the
+    # reason comment BEFORE applying the label: a comment alone does not re-run the workflow.)
     types: [opened, synchronize, reopened, labeled, unlabeled]
-  pull_request_review:
-    # A CODEOWNER approval can carry waivers; a dismissal must re-run the verdict to revoke them.
-    # These events re-run every job, not only dogfood. That is deliberate: a job skipped by an
-    # `if:` reports success, and a skipped `test` from a review-triggered run would stand in for
-    # a failed or cancelled `test` from the pull_request run on the same commit.
-    types: [submitted, dismissed]
 
 permissions:
   contents: read
@@ -76,31 +72,41 @@ jobs:
       - name: MCP server tests
         run: python -m pytest -o addopts="" -q tests/unit/test_mcp_server.py tests/unit/test_contract.py
 
-  dogfood:
-    # The authoritative verdict: re-run `repomarshal done` where the coding agent cannot write.
-    # No secrets are used here: the gates execute the PR's own code. The workflow token is
-    # read-only (it lets `--waivers github` read labels, comments and reviews; see
-    # docs/guides/waivers.md) and the gates can see it, so it must never gain write scopes.
-    if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
+  # Dogfood: the authoritative verdict for this repository's PRs, judged by RepoMarshal from BASE
+  # (v0.4, threat T26). Three stages, so that the PR's code never runs where the judge reads
+  # policy, waivers or results:
+  #   rm-plan   judge only: plan, PR-head binding, gate matrix. No PR code runs.
+  #   rm-gate-N one fresh job per gate that runs PR code, with NO token permissions.
+  #   dogfood   judge only, on a fresh runner: re-plan, re-read waivers, bind each gate result to
+  #             GitHub's own record of its job (Actions API), fold. No PR code runs.
+  # While BASE's judge predates `repomarshal ci` (v0.3), dogfood falls back to the single-job
+  # `repomarshal done`, which runs the gates itself.
+  rm-plan:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: read # waivers: labels, comments
       issues: read
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      ok: ${{ steps.plan.outputs.ok }}
+      expect: ${{ steps.plan.outputs.expect }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }} # the same commit in every job of the run
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Install the judge (RepoMarshal) from the PR's BASE commit
-        # The PR must not be able to change the code that judges it (or that decides which
-        # waivers are genuine): install RepoMarshal from BASE, outside the workspace. This runs
-        # before ANY PR-controlled code: a PR build backend run earlier (`pip install -e .`) could
-        # plant `git replace` refs or git config that rewrite what BASE looks like (v0.3 review).
+        # Before any PR-controlled code runs: install RepoMarshal from BASE, outside the
+        # workspace, so the PR cannot change the code that judges it (v0.3 review).
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
@@ -108,11 +114,9 @@ jobs:
           git archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/rm-base"
           python -m venv "$RUNNER_TEMP/rm-venv"
           "$RUNNER_TEMP/rm-venv/bin/python" -m pip install --quiet "$RUNNER_TEMP/rm-base"
-      - name: Install the tools the gates need (ruff, pytest) from BASE's dev extra
-        # Not `pip install -e .` from the PR: that runs the PR's build code before the judge reads
-        # BASE policy and waivers. The tests import the PR's code from src/ (pytest pythonpath),
-        # so only third-party tools come from here; PR code first runs inside the gates, after
-        # the judge has read everything it trusts.
+      - name: Install the gate tools (ruff, pytest) from BASE's dev requirements
+        # Not `pip install -e .`, which would run the PR's build code. Every job installs the same
+        # tools: tool availability is part of the plan, and the plans must match.
         run: |
           "$RUNNER_TEMP/rm-venv/bin/python" - "$RUNNER_TEMP/rm-base/pyproject.toml" \
             > "$RUNNER_TEMP/dev-requirements.txt" <<'PY'
@@ -125,21 +129,160 @@ jobs:
         run: |
           git config --global user.email "ci@example.invalid"
           git config --global user.name "CI"
-      - name: repomarshal done
+      - name: plan
+        id: plan
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           RM="$RUNNER_TEMP/rm-venv/bin/repomarshal"
-          WAIVERS=""
-          if "$RM" done --help | grep -q -- "--waivers"; then WAIVERS="--waivers github"; fi
+          if "$RM" ci --help > /dev/null 2>&1; then
+            echo "mode=split" >> "$GITHUB_OUTPUT"
+            "$RM" ci plan --base "$BASE_SHA" --github-output
+          else
+            echo "mode=legacy" >> "$GITHUB_OUTPUT"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "BASE's judge has no 'ci' command (pre-v0.4): dogfood runs the single-job verdict."
+          fi
+
+  rm-gate:
+    needs: rm-plan
+    if: needs.rm-plan.outputs.mode == 'split' && needs.rm-plan.outputs.count != '0'
+    name: rm-gate-${{ matrix.index }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions: {} # the PR's code runs here: no token scopes at all
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.rm-plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }} # the same commit in every job of the run
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the judge (RepoMarshal) from the PR's BASE commit
+        # Before any PR-controlled code runs: install RepoMarshal from BASE, outside the
+        # workspace, so the PR cannot change the code that judges it (v0.3 review).
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/rm-base"
+          git archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/rm-base"
+          python -m venv "$RUNNER_TEMP/rm-venv"
+          "$RUNNER_TEMP/rm-venv/bin/python" -m pip install --quiet "$RUNNER_TEMP/rm-base"
+      - name: Install the gate tools (ruff, pytest) from BASE's dev requirements
+        # Not `pip install -e .`, which would run the PR's build code. Every job installs the same
+        # tools: tool availability is part of the plan, and the plans must match.
+        run: |
+          "$RUNNER_TEMP/rm-venv/bin/python" - "$RUNNER_TEMP/rm-base/pyproject.toml" \
+            > "$RUNNER_TEMP/dev-requirements.txt" <<'PY'
+          import sys, tomllib
+          with open(sys.argv[1], "rb") as f:
+              print("\n".join(tomllib.load(f)["project"]["optional-dependencies"]["dev"]))
+          PY
+          python -m pip install --quiet -r "$RUNNER_TEMP/dev-requirements.txt"
+      - name: Git identity for fixture commits
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI"
+      - name: run gate
+        # The step name is part of the binding: the dogfood job checks this step's conclusion
+        # through the Actions API. Exit 0 PASS, 1 FAIL, 2 anything else.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          RM_EXPECT: ${{ needs.rm-plan.outputs.expect }}
+          RM_GATE: ${{ matrix.gate }}
+        run: |
+          "$RUNNER_TEMP/rm-venv/bin/repomarshal" ci gate --base "$BASE_SHA" --gate "$RM_GATE" \
+            --expect "$RM_EXPECT" --out "$RUNNER_TEMP/rm-result/result.json"
+      - name: upload result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rm-gate-${{ matrix.index }}
+          path: ${{ runner.temp }}/rm-result/result.json
+          if-no-files-found: error
+          retention-days: 30
+
+  dogfood:
+    needs: [rm-plan, rm-gate]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read # waivers: labels, comments
+      issues: read
+      actions: read # GitHub's record of the rm-gate jobs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }} # the same commit in every job of the run
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the judge (RepoMarshal) from the PR's BASE commit
+        # Before any PR-controlled code runs: install RepoMarshal from BASE, outside the
+        # workspace, so the PR cannot change the code that judges it (v0.3 review).
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/rm-base"
+          git archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/rm-base"
+          python -m venv "$RUNNER_TEMP/rm-venv"
+          "$RUNNER_TEMP/rm-venv/bin/python" -m pip install --quiet "$RUNNER_TEMP/rm-base"
+      - name: Install the gate tools (ruff, pytest) from BASE's dev requirements
+        # Not `pip install -e .`, which would run the PR's build code. Every job installs the same
+        # tools: tool availability is part of the plan, and the plans must match.
+        run: |
+          "$RUNNER_TEMP/rm-venv/bin/python" - "$RUNNER_TEMP/rm-base/pyproject.toml" \
+            > "$RUNNER_TEMP/dev-requirements.txt" <<'PY'
+          import sys, tomllib
+          with open(sys.argv[1], "rb") as f:
+              print("\n".join(tomllib.load(f)["project"]["optional-dependencies"]["dev"]))
+          PY
+          python -m pip install --quiet -r "$RUNNER_TEMP/dev-requirements.txt"
+      - name: Git identity for fixture commits
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI"
+      - name: Download the gate results
+        if: needs.rm-plan.outputs.mode == 'split' && needs.rm-plan.outputs.count != '0'
+        continue-on-error: true # a missing result is reported as UNKNOWN by the judge
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: rm-gate-*
+          path: ${{ runner.temp }}/rm-results
+      - name: repomarshal verdict
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RM_EXPECT: ${{ needs.rm-plan.outputs.expect }}
+        run: |
+          RM="$RUNNER_TEMP/rm-venv/bin/repomarshal"
+          mkdir -p "$RUNNER_TEMP/rm-results"
           set +e
-          # shellcheck disable=SC2086
-          "$RM" done --base "$BASE_SHA" $WAIVERS --json > repomarshal-done.json
+          if "$RM" ci --help > /dev/null 2>&1; then
+            "$RM" ci verdict --base "$BASE_SHA" --expect "$RM_EXPECT" \
+              --results "$RUNNER_TEMP/rm-results" --json > repomarshal-done.json
+          else
+            # Legacy (BASE judge before v0.4): one job runs the gates and judges.
+            WAIVERS=""
+            if "$RM" done --help | grep -q -- "--waivers"; then WAIVERS="--waivers github"; fi
+            # shellcheck disable=SC2086
+            "$RM" done --base "$BASE_SHA" $WAIVERS --json > repomarshal-done.json
+          fi
           code=$?
           set -e
           cat repomarshal-done.json
-          echo "repomarshal done exit code: $code (0 PASS, 1 FAIL, 2 UNKNOWN, 3 BLOCKED, 4 error)"
+          echo "repomarshal exit code: $code (0 PASS, 1 FAIL, 2 UNKNOWN, 3 BLOCKED, 4 error)"
           exit "$code"
       - name: Upload evidence
         if: always()
