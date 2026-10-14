@@ -30,7 +30,16 @@ Modes (api.done(..., waivers=mode)):
       admin/maintain permission on the repository, OR the latest review of a CODEOWNER for the
       target is APPROVED, was submitted for the PR's current head commit, and its body contains a
       line `repomarshal-waive <target>: <reason>`;
-    * the granter is not the PR author and not a bot (account type must be "User");
+    * the granter is not a bot (account type must be "User") and not the PR author, unless the
+      BASE policy sets completion.allow_author_waivers (v0.4, for solo-maintainer repositories);
+    * nothing was done through a GitHub App (v0.4): a coding agent acting through an app under
+      the maintainer's own account has the maintainer's login, so the login proves nothing. The
+      labeled event and the reason comment must carry `performed_via_github_app: null`; an app
+      value, or a missing or unreadable field, rejects the waiver (fail closed). The issue
+      events and issue comments endpoints expose the field. Pull request reviews do not, on any
+      GitHub API (REST /pulls/{n}/reviews, the timeline `reviewed` event, GraphQL
+      PullRequestReview), so a review can never be shown to be human and review waivers are
+      always rejected;
     * the reason is non-empty. A label waiver takes its reason from the latest PR comment by the
       same human with a line `repomarshal-waive <target>: <reason>`; if none, the waiver is
       rejected. (Label descriptions are NOT used: they are repository-wide and any writer can
@@ -485,6 +494,24 @@ def _human(user: Any) -> str | None:
     return login
 
 
+def _not_via_app(obj: Any) -> bool:
+    """True only when the API states the action was NOT made through a GitHub App: the field
+    `performed_via_github_app` is present and null. An app object, or a missing field (e.g. the
+    reviews API, which never sends it), is a rejection (v0.4, fail closed)."""
+    return (
+        isinstance(obj, dict)
+        and "performed_via_github_app" in obj
+        and (obj["performed_via_github_app"] is None)
+    )
+
+
+def _app_name(obj: Any) -> str:
+    app = obj.get("performed_via_github_app") if isinstance(obj, dict) else None
+    if isinstance(app, dict):
+        return str(app.get("slug") or app.get("name") or "a GitHub App")
+    return "a GitHub App"
+
+
 def _collect_github(
     root: Path, plan: Plan, environ: Mapping[str, str], notes: list[str]
 ) -> list[Waiver]:
@@ -531,8 +558,11 @@ def _collect_github(
     owners = CodeOwners.at_base(root, plan.change.base)
     gh = _GitHub(api_url, token)
     out: list[Waiver] = []
-    out += _label_waivers(gh, repo_name, number, author, targets, owners, notes)
-    out += _review_waivers(gh, repo_name, number, author, head_sha, targets, owners, notes)
+    allow_author = bool(getattr(plan.policy, "allow_author_waivers", False))
+    out += _label_waivers(gh, repo_name, number, author, targets, owners, notes, allow_author)
+    out += _review_waivers(
+        gh, repo_name, number, author, head_sha, targets, owners, notes, allow_author
+    )
     return out
 
 
@@ -544,6 +574,7 @@ def _label_waivers(
     targets: dict[str, tuple[str, ...]],
     owners: CodeOwners,
     notes: list[str],
+    allow_author: bool = False,
 ) -> list[Waiver]:
     events = gh.paged(f"/repos/{repo}/issues/{number}/events")
     last: dict[str, dict[str, Any]] = {}  # label name -> latest labeled/unlabeled event
@@ -569,21 +600,42 @@ def _label_waivers(
         if login is None:
             notes.append(f"label {name!r}: applied by a bot or unknown account; rejected")
             continue
-        if login.lower() == author.lower():
-            notes.append(f"label {name!r}: applied by the PR author {login}; rejected")
+        if not _not_via_app(ev):
+            how = (
+                f"through {_app_name(ev)}"
+                if ev.get("performed_via_github_app")
+                else "with no performed_via_github_app field"
+            )
+            notes.append(f"label {name!r}: applied {how}, not by a person in GitHub; rejected")
+            continue
+        if login.lower() == author.lower() and not allow_author:
+            notes.append(
+                f"label {name!r}: applied by the PR author {login}, and the BASE policy does "
+                "not set completion.allow_author_waivers; rejected"
+            )
             continue
         if not owners.owns(login, targets[target]) and not gh.has_admin_or_maintain(repo, login):
             notes.append(
                 f"label {name!r}: {login} is neither a CODEOWNER for it nor an admin/maintainer"
             )
             continue
-        reason, ref = "", ""
+        reason, ref, app_reason = "", "", False
         for c in comments:  # chronological: keep the latest matching comment
             if (_human(c.get("user")) or "").lower() != login.lower():
                 continue
             found = _reason_from(c.get("body"), target)
-            if found:
-                reason, ref = found, str(c.get("html_url") or "")
+            if not found:
+                continue
+            if not _not_via_app(c):
+                app_reason = True  # an app-made comment never supplies a reason
+                continue
+            reason, ref = found, str(c.get("html_url") or "")
+        if not reason and app_reason:
+            notes.append(
+                f"label {name!r}: the only reason comment(s) by {login} were made through a "
+                "GitHub App or lack performed_via_github_app; rejected"
+            )
+            continue
         if not reason:
             notes.append(
                 f"label {name!r}: no PR comment by {login} with "
@@ -612,6 +664,7 @@ def _review_waivers(
     targets: dict[str, tuple[str, ...]],
     owners: CodeOwners,
     notes: list[str],
+    allow_author: bool = False,
 ) -> list[Waiver]:
     reviews = gh.paged(f"/repos/{repo}/pulls/{number}/reviews")
     latest: dict[str, dict[str, Any]] = {}
@@ -630,8 +683,15 @@ def _review_waivers(
         if rv.get("state") != "APPROVED":
             notes.append(f"review by {login}: not an approval; its waiver lines are ignored")
             continue
-        if login.lower() == author.lower():
-            continue  # GitHub forbids it anyway
+        if not _not_via_app(rv):
+            notes.append(
+                f"review by {login}: the reviews API does not say whether it was made through a "
+                "GitHub App, so it cannot be shown to be a person's; review waivers are rejected "
+                f"(use a '{LABEL_PREFIX}<gate>' label and a reason comment)"
+            )
+            continue
+        if login.lower() == author.lower() and not allow_author:
+            continue  # GitHub forbids self-approval anyway
         if not isinstance(head_sha, str) or rv.get("commit_id") != head_sha:
             notes.append(f"review by {login}: approved an older commit; waiver lines ignored")
             continue

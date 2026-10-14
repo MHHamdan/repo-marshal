@@ -4,5 +4,9 @@ version = 1
 
 [completion]
 # A maintainer can accept an unverifiable gate (UNKNOWN / UNAVAILABLE, never FAIL) on a PR with
-# a `repomarshal-waive:<gate>` label or a CODEOWNER review (see docs/guides/ci.md).
+# a `repomarshal-waive:<gate>` label plus a reason comment (see docs/guides/waivers.md).
 waivers_permit_pass = true
+# Solo-maintainer repository: every PR is opened by the only CODEOWNER, who cannot approve their
+# own PR, so the author must be able to grant a label waiver. Changes made through a GitHub App
+# (e.g. a coding agent acting under the maintainer's account) are still rejected.
+allow_author_waivers = true

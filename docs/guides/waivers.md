@@ -29,16 +29,20 @@ Waivers count towards PASS only when the BASE commit's `repomarshal.toml` says s
 ```toml
 [completion]
 waivers_permit_pass = true
+# v0.4, optional: let the PR author grant a waiver. Needed when one maintainer opens every PR
+# (GitHub does not let an author approve their own PR, and nobody else can grant one).
+allow_author_waivers = true
 ```
 
-Without it, waived gates are still listed (in the reasons and the evidence record) but the verdict
+Without `waivers_permit_pass`, waived gates are still listed (in the reasons and the evidence record) but the verdict
 stays UNKNOWN. Because the policy is read from BASE, a pull request cannot turn the switch on for
 itself; the change takes effect after it merges.
 
 ## Who can grant a waiver, and how (CI: `--waivers github`)
 
 In GitHub Actions on a pull request, `repomarshal done --waivers github` reads the PR through the
-GitHub API with the workflow token. There are two ways to grant a waiver.
+GitHub API with the workflow token. The way to grant a waiver is a label plus a comment, made by a
+person in the GitHub web UI (or another client that does not act through a GitHub App).
 
 **1. A label plus a comment.** Apply the label `repomarshal-waive:<target>` to the PR, for example
 `repomarshal-waive:security_scan`, and post a PR comment containing the line:
@@ -50,17 +54,25 @@ repomarshal-waive security_scan: scanner licence expired, reviewed auth change b
 The waiver is genuine when:
 
 - the label is on the PR now, and the account that most recently applied it is a human (account
-  type `User`, not a bot or app) and is not the PR author;
+  type `User`, not a bot) and is not the PR author, unless the BASE policy sets
+  `allow_author_waivers = true`;
+- **neither the `labeled` event nor the reason comment was made through a GitHub App** (v0.4).
+  GitHub records `performed_via_github_app` on both. A coding agent that acts on GitHub through
+  an app under the maintainer's own account (for example the Claude GitHub app) has the
+  maintainer's login, so the login alone proves nothing. An app value, or a missing or unreadable
+  field, rejects the waiver;
 - that account is a CODEOWNER for the target, or has `admin` or `maintain` permission on the
   repository (a failed permission lookup counts as no permission);
 - the same account wrote a PR comment with a `repomarshal-waive <target>: <reason>` line and a
   non-empty reason. No reason, no waiver.
 
-**2. An approving review.** A CODEOWNER submits an **Approve** review whose body contains the line
-`repomarshal-waive <target>: <reason>`. Only each reviewer's latest review counts, it must be
-APPROVED (a "Comment" review never grants a waiver), it must be for the PR's current head commit
-(a new push invalidates it), and the reviewer must not be the PR author or a bot. One review may
-waive several targets, one line each.
+**Reviews do not grant waivers (v0.4).** Earlier versions also accepted an approving CODEOWNER
+review with a `repomarshal-waive <target>: <reason>` line. No GitHub API says whether a review was
+submitted through a GitHub App (the REST reviews and timeline payloads have no
+`performed_via_github_app` field, and GraphQL `PullRequestReview` has only `createdViaEmail`), so
+a review from an agent is indistinguishable from the maintainer's. Review waivers are therefore
+always rejected, with a note pointing to the label route. If GitHub adds the field, the same check
+will accept a review made by a person.
 
 **CODEOWNERS** is read from the BASE commit (`.github/CODEOWNERS`, then `CODEOWNERS`, then
 `docs/CODEOWNERS`), never from the PR. A user is a CODEOWNER for a target when they are on the `*`
@@ -77,10 +89,13 @@ adding or removing a waiver updates the status check.
 
 ### What the agent can and cannot do
 
-The coding agent usually works as the PR author, which is excluded outright. It cannot apply a
-label as somebody else, write a comment or review as somebody else, or change CODEOWNERS or the
-policy at BASE. This depends on the agent **not** holding a maintainer's or CODEOWNER's GitHub
-credentials: whoever holds those credentials is, to GitHub, that maintainer.
+The coding agent usually works as the PR author. Unless the policy allows author waivers, that
+excludes it outright. Either way it cannot apply a label as somebody else, write a comment as
+somebody else, or change CODEOWNERS or the policy at BASE. When it acts through a GitHub App, even
+under the maintainer's own account, its labels and comments carry `performed_via_github_app` and
+are rejected. This depends on the agent **not** holding a maintainer's own credentials outside
+an app (a personal access token, a logged-in `gh` or browser session): whoever holds those is, to
+GitHub, that maintainer, and nothing in the API can tell them apart.
 
 Residual risks to know about:
 
@@ -88,8 +103,7 @@ Residual risks to know about:
   text of a human's label waiver. The label (and so the target) still has to come from an
   authorised human.
 - A label waiver is not bound to a commit: it stays valid after later pushes until someone removes
-  the label. Remove `repomarshal-waive:*` labels once they are no longer meant to apply. (Review
-  waivers are bound to the head commit.)
+  the label. Remove `repomarshal-waive:*` labels once they are no longer meant to apply.
 - The CI job runs the PR's own code, including, in this repository, RepoMarshal itself. Protect
   `.github/workflows/` and `src/` with CODEOWNERS and required code-owner review (see
   [ci.md §4](ci.md#4-trust-caveats)).

@@ -476,6 +476,9 @@
         },
         "waivers_permit_pass": {
           "type": "boolean"
+        },
+        "allow_author_waivers": {
+          "type": "boolean"
         }
       },
       "required": [

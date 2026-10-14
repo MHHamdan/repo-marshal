@@ -239,6 +239,7 @@ class Policy:
     token_budget: int = 12_000
     skills_max: int = 3
     waivers_permit_pass: bool = False
+    allow_author_waivers: bool = False
     gates: tuple[Gate, ...] = ()  # from [gates.<id>]; already validated
     signals: tuple[SignalRuleSpec, ...] = ()
     source: str = "default"  # "default" or "base:<sha>:repomarshal.toml"
@@ -316,6 +317,8 @@ class PolicyRef:
     digest: str
     # v0.3: copied from the BASE policy so `done` can fold waivers without re-reading it.
     waivers_permit_pass: bool = False
+    # v0.4: whether the PR author may grant a waiver (solo-maintainer repositories).
+    allow_author_waivers: bool = False
 
 
 @dataclass(frozen=True)

@@ -132,18 +132,29 @@ def user(login: str) -> dict:
     return {"login": login, "type": "Bot" if login.endswith("[bot]") else "User"}
 
 
-def label(target: str, login: str, event: str = "labeled", n: int = 1) -> dict:
+_NO_APP: dict = {"performed_via_github_app": None}  # what GitHub sends for a person's action
+
+
+def label(
+    target: str, login: str, event: str = "labeled", n: int = 1, via: dict | None = _NO_APP
+) -> dict:
     return {
         "id": n,
         "event": event,
         "actor": user(login),
         "label": {"name": f"repomarshal-waive:{target}"},
         "created_at": f"2026-10-0{n}T00:00:00Z",
+        **(via if via is not None else {}),
     }
 
 
-def comment(login: str, body: str) -> dict:
-    return {"user": user(login), "body": body, "html_url": f"https://gh/c/{login}"}
+def comment(login: str, body: str, via: dict | None = _NO_APP) -> dict:
+    return {
+        "user": user(login),
+        "body": body,
+        "html_url": f"https://gh/c/{login}",
+        **(via if via is not None else {}),
+    }
 
 
 def review(login: str, state: str, body: str, commit: str = HEAD) -> dict:
@@ -355,7 +366,9 @@ def test_label_for_target_not_in_plan_is_ignored(repo, gh, tmp_path):
 # --------------------------------------------------------------------------- github: reviews
 
 
-def test_approving_codeowner_review_is_a_waiver(repo, gh, tmp_path):
+def test_approving_codeowner_review_is_not_a_waiver(repo, gh, tmp_path):
+    """v0.4: the reviews API never says whether a review was made through a GitHub App, so an
+    approving CODEOWNER review cannot be shown to be a person's: rejected, with a note."""
     gh.pr(
         reviews=[
             review(
@@ -367,11 +380,8 @@ def test_approving_codeowner_review_is_a_waiver(repo, gh, tmp_path):
         ]
     )
     found, notes = collect_gh(repo, gh, tmp_path)
-    assert [(w.target, w.source) for w in found] == [
-        ("runtime", WaiverSource.GITHUB_REVIEW),
-        ("security_scan", WaiverSource.GITHUB_REVIEW),
-    ], notes
-    assert found[0].reason == "no device lab"
+    assert found == (), notes
+    assert any("reviews API does not say" in n for n in notes)
 
 
 def test_commented_review_is_no_waiver(repo, gh, tmp_path):
@@ -462,7 +472,10 @@ def test_github_mode_needs_a_pr_event_in_actions(repo, gh, tmp_path, override):
 
 
 def test_pull_request_review_event_is_accepted(repo, gh, tmp_path):
-    gh.pr(reviews=[review(OWNER, "APPROVED", "repomarshal-waive runtime: ok")])
+    gh.pr(
+        events=[label("runtime", OWNER)],
+        comments=[comment(OWNER, "repomarshal-waive runtime: ok")],
+    )
     found, _ = collect_gh(repo, gh, tmp_path, GITHUB_EVENT_NAME="pull_request_review")
     assert [w.target for w in found] == ["runtime"]
 

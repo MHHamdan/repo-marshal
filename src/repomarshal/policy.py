@@ -13,6 +13,7 @@ Accepted format (version 1):
     max = 3                             # int 0..10
     [completion]
     waivers_permit_pass = false         # bool
+    allow_author_waivers = false        # bool (v0.4): the PR author may grant a waiver
     [gates.<id>]                        # id: [a-z0-9][a-z0-9._-]*
     kind = "security_scan"              # a model.GateKind value
     argv = ["bandit", "-r", "app"]      # non-empty array of strings; a string is an error
@@ -56,7 +57,7 @@ TOP_KEYS = frozenset({"version", "context", "skills", "completion", "gates", "si
 SECTION_KEYS = {
     "context": frozenset({"token_budget"}),
     "skills": frozenset({"max"}),
-    "completion": frozenset({"waivers_permit_pass"}),
+    "completion": frozenset({"waivers_permit_pass", "allow_author_waivers"}),
 }
 GATE_KEYS = frozenset({"kind", "argv", "scope", "cwd", "cost", "timeout_s"})
 SIGNAL_KEYS = frozenset({"id", "domain", "risk", "paths"})
@@ -117,6 +118,10 @@ def _build(data: dict[str, Any], source: str, digest: str) -> Policy:
     if not isinstance(waivers, bool):
         errors.append(f"completion.waivers_permit_pass: must be a boolean, got {waivers!r}")
 
+    author = sections["completion"].get("allow_author_waivers", Policy.allow_author_waivers)
+    if not isinstance(author, bool):
+        errors.append(f"completion.allow_author_waivers: must be a boolean, got {author!r}")
+
     gates = _gates(data.get("gates"), errors) if "gates" in data else ()
     signals = _signals(data.get("signals"), errors) if "signals" in data else ()
 
@@ -127,6 +132,7 @@ def _build(data: dict[str, Any], source: str, digest: str) -> Policy:
         token_budget=token_budget,
         skills_max=skills_max,
         waivers_permit_pass=waivers,
+        allow_author_waivers=author,
         gates=gates,
         signals=signals,
         source=source,

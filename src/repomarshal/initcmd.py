@@ -47,6 +47,8 @@ version = 1
 # Whether a WAIVED gate result may count as PASS. Default false: a waiver stays UNKNOWN.
 # [completion]
 # waivers_permit_pass = false
+# Whether the PR author may grant a waiver (needed when the only maintainer opens every PR).
+# allow_author_waivers = false
 
 # Extra gates. Each runs an argv list (never a shell) from cwd inside the repository. Ids use
 # [a-z0-9][a-z0-9._-]*. A policy gate replaces a detected gate of the same scope and kind.

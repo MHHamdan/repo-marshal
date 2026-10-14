@@ -324,3 +324,22 @@ def test_gate_id_may_not_equal_a_kind_name(tmp_path):
     with pytest.raises(PolicyInvalid) as e:
         load_policy(r.root, base)
     assert any("gate kind" in err for err in e.value.errors)
+
+
+def test_allow_author_waivers_defaults_false_and_is_parsed(tmp_path):
+    repo, base = _repo(tmp_path, None)
+    assert load_policy(repo.root, base).allow_author_waivers is False
+    repo2, base2 = _repo(tmp_path / "b", "version = 1\n[completion]\nallow_author_waivers = true\n")
+    assert load_policy(repo2.root, base2).allow_author_waivers is True
+
+
+def test_allow_author_waivers_must_be_boolean(tmp_path):
+    errors = _errors(tmp_path, 'version = 1\n[completion]\nallow_author_waivers = "yes"\n')
+    assert any("completion.allow_author_waivers" in e for e in errors)
+
+
+def test_this_repository_enables_author_waivers():
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[2] / "repomarshal.toml").read_text()
+    assert "allow_author_waivers = true" in text and "waivers_permit_pass = true" in text

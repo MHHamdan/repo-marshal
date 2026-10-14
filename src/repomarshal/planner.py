@@ -48,7 +48,10 @@ def compile_plan(
         skills=picks,
         evidence_level="elevated" if risk == Risk.ELEVATED else "standard",
         policy=PolicyRef(
-            source=pol.source, digest=pol.digest, waivers_permit_pass=pol.waivers_permit_pass
+            source=pol.source,
+            digest=pol.digest,
+            waivers_permit_pass=pol.waivers_permit_pass,
+            allow_author_waivers=pol.allow_author_waivers,
         ),
         generator={"name": "repomarshal", "version": __version__},
     ).with_hash()

@@ -91,9 +91,11 @@ When a required gate cannot run (UNAVAILABLE or UNKNOWN), a maintainer can accep
 pull request with a waiver. The full rules are in [waivers.md](waivers.md); in short:
 
 - **Grant:** a `repomarshal-waive:<target>` label applied by a CODEOWNER or an admin/maintainer,
-  plus a PR comment by the same person with a line `repomarshal-waive <target>: <reason>`; or an
-  approving CODEOWNER review of the current head commit whose body has that line. Never the PR
-  author, never a bot. CODEOWNERS is read at BASE.
+  plus a PR comment by the same person with a line `repomarshal-waive <target>: <reason>`, both
+  made by a person, not through a GitHub App (`performed_via_github_app` must be null). Never a
+  bot; never the PR author unless BASE sets `allow_author_waivers = true`. Reviews never grant a
+  waiver: the reviews API cannot show they were not made through an app. CODEOWNERS is read at
+  BASE.
 - **Counts only if BASE permits:** `[completion] waivers_permit_pass = true` in `repomarshal.toml`
   on the base branch. Otherwise a waived gate stays UNKNOWN.
 - **Never waivable:** a FAIL, a tree that changed during the run, opaque content, "nothing was
