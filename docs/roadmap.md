@@ -64,6 +64,13 @@ threat model priorities.
 - **Split CI verification** (`repomarshal ci plan|gate|verdict`): gates run in isolated,
   permission-less jobs; results bind to plan, HEAD, tree and GitHub's job record (T26 closed).
 
+## Done in v0.5
+
+- **Trusted verdict** (`repomarshal-verdict.yml`, `repomarshal ci trusted-verdict`): runs from the
+  default branch via `workflow_run`, binds the ci run's gate records to the PR head SHA, refuses
+  them if the PR changed `ci.yml`, and posts the commit status `repomarshal/verdict` (T31). With
+  a GitHub App identity the status cannot be forged (T35).
+
 ## SHOULD: next, in priority order
 
 1. **Evidence hash chain** (`prev_digest`) and a `status` command that reports STALE.

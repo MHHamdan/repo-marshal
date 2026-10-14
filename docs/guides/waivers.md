@@ -78,6 +78,11 @@ a review from an agent is indistinguishable from the maintainer's. Review waiver
 always rejected, with a note pointing to the label route. If GitHub adds the field, the same check
 will accept a review made by a person.
 
+**`ci-workflow` (v0.5, trusted CI verdict only).** A PR that changes `.github/workflows/ci.yml`
+can redefine the gate jobs, so the trusted verdict does not trust their records. After reviewing
+the workflow diff yourself, grant the target `ci-workflow` with the same label and comment, and
+the records bind again. Every gate still needs its own result or waiver.
+
 **CODEOWNERS** is read from the BASE commit (`.github/CODEOWNERS`, then `CODEOWNERS`, then
 `docs/CODEOWNERS`), never from the PR. A user is a CODEOWNER for a target when they are on the `*`
 rule, or when they own every changed path the target covers (last matching rule per path, as on

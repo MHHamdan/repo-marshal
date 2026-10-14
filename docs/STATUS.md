@@ -4,44 +4,41 @@ _Last updated: 2026-10-14_
 
 ## Current phase
 
-**v0.4 is in progress** on branch `claude/v0.4`, which branched from `origin/main` at b7efa16. v0.3
-(PR #1) is merged and was verified by the owner. The lead is doing the work alone, because it does
-not split cleanly into parallel agents.
+**v0.5 is in progress** on branch `claude/v0.5`.
 
-v0.4 scope (from the owner):
-1. Solo-maintainer deadlock: BASE policy `completion.allow_author_waivers` (default false) lets
-   the PR author grant a label waiver. Enabled in this repo's `repomarshal.toml`. **Done.**
-2. Agent indistinguishable from the human: reject any waiver whose labeled event or reason
-   comment has `performed_via_github_app` set, or lacks the field. **Done.**
-   - Endpoints checked against GitHub's OpenAPI description: issue events and issue comments
-     expose the field.
-   - Reviews do not expose it anywhere (REST reviews, timeline `reviewed`, GraphQL
-     `PullRequestReview`), so review waivers are always rejected.
-   - Tests use payloads recorded through the Claude app on throwaway issue #2 (closed).
-3. T26: split CI (`repomarshal ci plan|gate|verdict`, `src/repomarshal/ci.py`): plan job,
-   permission-less matrix job per gate, verdict job. Results bind to the plan, HEAD (PR head or its
-   merge commit), tree and GitHub's job/step record. **Done.**
-4. Fresh fail-open review (`tests/review_v04/`): 7 confirmed fail-open paths (1 critical: the
-   judge jobs imported PR files during setup), all fixed with regression tests. One concern is
-   not fixable inside a `pull_request` workflow: the workflow file itself comes from the PR
-   (threat model T31). **Done.**
-5. PR to main with the dogfood result: open.
+- **Branch base.** The owner reported v0.4 as merged, but on 2026-10-14 GitHub still showed PR #3
+  open and `main` at b7efa16 (v0.3). So `claude/v0.5` is stacked on `claude/v0.4` (3060d63). The
+  v0.5 PR targets `main`, and its diff includes the v0.4 commits until PR #3 merges.
+
+v0.5 scope (from the owner): close T31 without CODEOWNERS review.
+- **Trusted verdict workflow: done.** `.github/workflows/repomarshal-verdict.yml` is triggered
+  by `workflow_run` of `ci` and always runs from the default branch. It runs
+  `repomarshal ci trusted-verdict`, which:
+  - checks the triggering run through the Actions API (path, event, head SHA, attempt);
+  - finds the single open PR for that head;
+  - refuses the gate records if the PR changed `ci.yml`, unless a human grants the
+    `ci-workflow` waiver;
+  - binds the `rm-gate-N` step records and result files to the PR head SHA;
+  - posts the commit status `repomarshal/verdict` (`statuses: write` is its only write scope).
+- **`ci.yml`: done.** The gate jobs check out the PR head SHA, and the in-workflow `dogfood` job
+  is now "dogfood (advisory)".
+- **Identity: done, with an owner setup step.** Workflow-token statuses can be forged by any
+  workflow on any branch (T35). The workflow therefore posts with a GitHub App token whenever
+  the environment `repomarshal-verdict` holds `REPOMARSHAL_APP_CLIENT_ID` and
+  `REPOMARSHAL_APP_PRIVATE_KEY`. The setup is documented in `docs/guides/ci.md`.
+- **Required check: done.** Exactly `repomarshal/verdict` (source: the App).
+- Fresh fail-open review: next.
 
 ## Next step
 
-The PR `claude/v0.4` → `main` is open: wait for CI and report the dogfood result.
-- Suite: 1258 passed, also under `PYTHONSAFEPATH=1`, which is how gates run it. MCP: 38 passed.
-- `plan` cold start: median 182 ms.
+1. Run the fresh fail-open reviewer on the trusted workflow, `ci trusted-verdict` and the
+   `ci-workflow` waiver, with tests under `tests/review_v05/`. Fix every confirmed finding.
+2. Open the PR and report.
 
-Dogfood for this PR uses the legacy single-job fallback, because main's judge (v0.3) has no
-`repomarshal ci`. The local simulation gives UNKNOWN (exit 2):
-- `root:unit` passes (exit 0), but its definition changed (new conftest files), so it is
-  UNKNOWN;
-- `integration` is required but unavailable.
-
-Both are waivable, but the v0.3 judge rejects waivers granted by the PR author, and the owner
-is the author. So a label cannot make this PR PASS. Once v0.4 is merged,
-`allow_author_waivers` and the split jobs apply to the next PR.
+Expected for the v0.5 PR:
+- the trusted workflow is not on `main`, so it does not run;
+- the advisory dogfood is judged by main's v0.3 judge (legacy fallback) and is UNKNOWN;
+- no author waiver can work until PR #3 is merged.
 
 ## Upstream repos inspected
 
@@ -108,3 +105,9 @@ is the author. So a label cannot make this PR PASS. Once v0.4 is merged,
 - **v0.4 one job per gate:** PR code in one job can read the runner's artifact token. Each
   result is therefore cross-checked against GitHub's step conclusions for its own job, which
   PR code in another job cannot change.
+- **v0.5 tests the PR head, not GitHub's merge commit:** the trusted verdict binds to the head
+  SHA, where the commit status lives. Base drift is handled by "Require branches to be up to
+  date" (T37).
+- **v0.5 `ci-workflow` waiver:** a PR that changes `ci.yml` cannot bind on its own. A reviewed
+  workflow change needs a person's waiver, otherwise a solo maintainer could never merge one
+  without bypassing protection.

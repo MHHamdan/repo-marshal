@@ -234,6 +234,72 @@ Notes:
 - Until the BASE judge has `repomarshal ci` (v0.4), the workflow falls back to the single-job
   `done`.
 
+### The trusted verdict and branch protection (v0.5)
+
+A `pull_request` workflow runs the PR's own copy of the workflow file, so a PR can rewrite any
+job in it, including a verdict job (threat T31). The verdict therefore comes from a second
+workflow, `.github/workflows/repomarshal-verdict.yml`. It is triggered by `workflow_run` when
+the `ci` workflow completes, and GitHub always runs `workflow_run` workflows from the default
+branch.
+
+How it works:
+
+1. The PR's `ci` run has the `rm-plan` job and the permission-less `rm-gate-N` jobs. They check
+   out the PR head SHA.
+2. `repomarshal-verdict` runs from the default branch. It posts `repomarshal/verdict: pending`
+   on the PR head, installs the judge from the PR's base commit (which must be on the base
+   branch), and checks out the PR head as data only. It then runs `repomarshal ci
+   trusted-verdict`, which:
+   - checks with the Actions API that the triggering run is a `pull_request` run of
+     `.github/workflows/ci.yml` for that head SHA and attempt;
+   - finds the single open PR with that head;
+   - refuses the gate records if the PR changed `.github/workflows/ci.yml` since its merge base;
+   - re-plans, re-reads the waivers, runs the native checks, and binds each `rm-gate-N` result
+     to GitHub's step record of that job (as in the split above);
+   - posts `success` only for PASS, `failure` for FAIL, and `error` for everything else,
+     including a judge that did not finish.
+3. If a PR edits `ci.yml`, the verdict is UNKNOWN (`error`) unless a person reviews the change
+   and grants the waiver target **`ci-workflow`**: the label `repomarshal-waive:ci-workflow`
+   plus a comment line `repomarshal-waive ci-workflow: <reason>`. The usual waiver rules apply:
+   made by a person, not through an app; BASE `waivers_permit_pass`; author only with
+   `allow_author_waivers`. It accepts the workflow change, not any gate result, and is recorded
+   in the evidence. If a PR renames or deletes the `ci` workflow, `repomarshal-verdict` never
+   runs, and the required status stays "Expected", which blocks the merge. A missing or skipped
+   `rm-gate-N` job is UNKNOWN.
+
+#### Branch protection: require exactly one check
+
+Require **`repomarshal/verdict`**, the commit status, and nothing else from RepoMarshal. Do not
+require `dogfood (advisory)` or any `rm-*` job: those come from the PR-controlled workflow. Also
+turn on "Do not allow bypassing the above settings" (or include administrators), and block force
+pushes to the default branch.
+
+#### Who may post that status: a GitHub App (strongly recommended)
+
+The workflow token cannot prove where a status came from. Any workflow run in the repository can
+request `statuses: write` and post a status named `repomarshal/verdict` on any commit. That
+includes a `push` workflow added on some unrelated branch by whoever (or whatever agent) can push
+branches. Statuses posted with the workflow token are all attributed to the same
+`github-actions` identity. So, without the next steps, the required check can be forged by
+anyone with push access.
+
+To make it unforgeable:
+
+1. Create a GitHub App (Settings, then Developer settings, then GitHub Apps, then New). Turn the
+   webhook off. Repository permissions: **Commit statuses: Read and write** only. Install it on
+   this repository.
+2. Create the environment **`repomarshal-verdict`** (Settings, then Environments). Under
+   "Deployment branches and tags" choose "Selected branches" and allow only the default branch.
+3. Add two environment secrets: `REPOMARSHAL_APP_CLIENT_ID` (the App's client ID) and
+   `REPOMARSHAL_APP_PRIVATE_KEY` (a private key generated for the App).
+4. In branch protection, require `repomarshal/verdict` and set its expected source to **that
+   App**.
+
+The trusted workflow then posts the status with an App token. Only jobs on the default branch can
+reach the environment, and no workflow a PR branch can run is on the default branch. The `ci`
+workflow, its `rm-gate` jobs and any workflow a PR adds cannot get the secret, so a status they
+post does not satisfy the requirement. Keep the App's key out of agent environments.
+
 ## 8. Other CI systems
 
 The recipe is the same everywhere: full history, an explicit BASE from the platform (not from the

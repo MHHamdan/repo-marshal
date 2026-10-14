@@ -8,7 +8,7 @@ which checks this specific change requires. Every check the plan skips comes wit
 RepoMarshal then runs the required checks itself and returns a verdict (PASS, FAIL, UNKNOWN or
 BLOCKED) that never treats "could not check" as "passed".
 
-> Status: **v0.4 development slice.** CLI, Claude Code hooks, MCP server and a CI recipe;
+> Status: **v0.5 development slice.** CLI, Claude Code hooks, MCP server and a CI recipe;
 > Python ≥ 3.11, no runtime dependencies. Not yet published to PyPI. Measured on 27 commits from
 > 5 real repositories: [`docs/evaluation.md`](docs/evaluation.md).
 
@@ -53,7 +53,10 @@ cd /path/to/your/repo
 - **CI, the authoritative verdict:** see [`docs/guides/ci.md`](docs/guides/ci.md). Run
   `repomarshal done --base <PR base sha>` where the agent cannot write. Better, use the v0.4 split
   (`repomarshal ci plan` / `ci gate` / `ci verdict`): each gate that runs the PR's code gets its
-  own job with no token permissions, and the judge jobs run no PR code at all.
+  own job with no token permissions, and the judge jobs run no PR code at all. v0.5: the verdict
+  is posted as the commit status `repomarshal/verdict` by a workflow that always runs from the
+  default branch (`repomarshal-verdict.yml`). Make that status the one required check, and post
+  it as a GitHub App ([`docs/guides/ci.md`](docs/guides/ci.md#the-trusted-verdict-and-branch-protection-v05)).
 - **Waivers, human only:** when a required gate cannot run, a maintainer can accept the gap for one
   change: in CI with a `repomarshal-waive:<gate>` PR label plus a reason comment, both made by a
   person (anything done through a GitHub App, such as a coding agent acting under the
