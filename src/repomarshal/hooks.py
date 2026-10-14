@@ -71,7 +71,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from repomarshal import api
+from repomarshal import anchor, api
 from repomarshal.model import ResultStatus, Verdict
 from repomarshal.runner import redact
 
@@ -246,10 +246,7 @@ def evidence_digest(record: Any) -> str:
 
 def _load_state(root: Path) -> dict[str, Any]:
     """The `sessions` map, or {} when the file is missing, unreadable or invalid."""
-    try:
-        data = json.loads((root / STATE_FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError):
-        return {}
+    data = anchor.read_small_json(root / STATE_FILE)  # bounded, no symlink (review_v03 #4)
     if not isinstance(data, dict) or data.get("version") != STATE_VERSION:
         return {}
     sessions = data.get("sessions")

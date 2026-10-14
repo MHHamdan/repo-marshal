@@ -32,7 +32,7 @@ def test_explicit_base_can_only_widen_and_is_never_remembered(tmp_path):
     sha, how = anchor.effective_base(r.root, work)  # narrower than the floor: widened back
     assert sha == base and how.startswith("explicit, widened")
     anchor.remember(r.root, work, explicit=True)
-    state = json.loads((r.root / anchor.STATE_FILE).read_text())
+    state = json.loads(anchor.state_path(r.root).read_text())
     assert state["feature"] == base
 
 
@@ -48,13 +48,13 @@ def test_first_value_wins_without_explicit(tmp_path):
     r, base, work = _repo(tmp_path)
     anchor.remember(r.root, base, explicit=False)
     anchor.remember(r.root, work, explicit=False)
-    assert json.loads((r.root / anchor.STATE_FILE).read_text())["feature"] == base
+    assert json.loads(anchor.state_path(r.root).read_text())["feature"] == base
 
 
 def test_corrupt_or_deleted_state_only_restores_automatic(tmp_path):
     r, base, _ = _repo(tmp_path)
-    (r.root / ".repomarshal" / "state").mkdir(parents=True)
-    (r.root / anchor.STATE_FILE).write_text("{not json")
+    anchor.state_path(r.root).parent.mkdir(parents=True)
+    anchor.state_path(r.root).write_text("{not json")
     assert anchor.effective_base(r.root, None) == (base, "automatic")
-    (r.root / anchor.STATE_FILE).write_text(json.dumps({"feature": "f" * 40}))
+    anchor.state_path(r.root).write_text(json.dumps({"feature": "f" * 40}))
     assert anchor.effective_base(r.root, None) == (base, "automatic")
