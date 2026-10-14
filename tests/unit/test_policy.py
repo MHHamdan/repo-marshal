@@ -314,3 +314,13 @@ def test_errors_are_collected_in_message(tmp_path):
         load_policy(repo.root, base)
     assert len(exc.value.errors) == 4
     assert str(exc.value) == "; ".join(exc.value.errors)
+
+
+def test_gate_id_may_not_equal_a_kind_name(tmp_path):
+    """A policy gate called `runtime` would make the waiver target `runtime` ambiguous."""
+    r = GitRepo(tmp_path / "r")
+    r.write("repomarshal.toml", 'version = 1\n[gates.runtime]\nkind = "runtime"\nargv = ["x"]\n')
+    base = r.commit("policy")
+    with pytest.raises(PolicyInvalid) as e:
+        load_policy(r.root, base)
+    assert any("gate kind" in err for err in e.value.errors)

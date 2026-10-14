@@ -180,6 +180,11 @@ def _gates(raw: Any, errors: list[str]) -> tuple[Gate, ...]:
         n_errors = len(errors)
         if not GATE_ID_RE.fullmatch(gate_id):
             errors.append(f"{path}: invalid gate id (expected [a-z0-9][a-z0-9._-]*)")
+        elif gate_id in {k.value for k in GateKind}:
+            errors.append(
+                f"{path}: a gate id may not equal a gate kind ({gate_id!r}); kind names are "
+                "reserved for kind-level waiver targets"
+            )
         if not isinstance(table, dict):
             errors.append(f"{path}: must be a table")
             continue

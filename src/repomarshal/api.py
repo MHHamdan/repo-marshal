@@ -220,8 +220,12 @@ def done(
     tree_changed = tree_changed or before != after
     # v0.3 human override: only the caller decides where waivers may come from (the hook and the
     # MCP server pass "none"); waivers.collect decides which ones are genuine.
-    granted = waivers_mod.collect(root, p, waivers, env) if waivers != "none" else ()
+    granted: tuple = ()
+    waiver_notes: tuple[str, ...] = ()
+    if waivers != "none":
+        granted, waiver_notes = waivers_mod.collect_report(root, p, waivers, env)
     v, reasons = verdict.fold(
         p, tuple(results), tree_changed, p.policy.waivers_permit_pass, granted
     )
+    reasons = tuple(reasons) + tuple(f"waivers: {n}" for n in waiver_notes)
     return _record(root, p, results, before, after, v, reasons, granted)

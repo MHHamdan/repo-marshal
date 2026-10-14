@@ -23,6 +23,13 @@ from repomarshal import native
 from repomarshal.model import ChangeSet, Gate, GateResult, ResultStatus, sha256_bytes
 
 TAIL_LINES = 40
+_CI_TOKENS = (
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "ACTIONS_RUNTIME_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+)
 
 _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
@@ -137,6 +144,10 @@ def _run(repo: Path, gate: Gate, change: ChangeSet, env: Mapping[str, str] | Non
             argv=gate.argv,
         )
     run_env = dict(os.environ if env is None else env)
+    # Gates run the change's own code: never hand them CI credentials (v0.3: the dogfood job's
+    # workflow token is for reading waivers, not for the code under test).
+    for secret in _CI_TOKENS:
+        run_env.pop(secret, None)
     # A file the change adds in the gate's cwd (e.g. backend/pytest.py) must not shadow the tool
     # that `python -m <tool>` is meant to run (fail-open review #5).
     run_env["PYTHONSAFEPATH"] = "1"

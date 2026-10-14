@@ -96,8 +96,18 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install RepoMarshal and the tools its gates need (ruff, pytest)
+      - name: Install the tools the gates need (ruff, pytest) from the PR
         run: python -m pip install -e ".[dev]"
+      - name: Install the judge (RepoMarshal) from the PR's BASE commit
+        # The PR must not be able to change the code that judges it (or that decides which
+        # waivers are genuine): install RepoMarshal from BASE, outside the workspace.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/rm-base"
+          git archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/rm-base"
+          python -m venv "$RUNNER_TEMP/rm-venv"
+          "$RUNNER_TEMP/rm-venv/bin/python" -m pip install --quiet "$RUNNER_TEMP/rm-base"
       - name: Git identity for fixture commits
         run: |
           git config --global user.email "ci@example.invalid"
@@ -107,8 +117,12 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          RM="$RUNNER_TEMP/rm-venv/bin/repomarshal"
+          WAIVERS=""
+          if "$RM" done --help | grep -q -- "--waivers"; then WAIVERS="--waivers github"; fi
           set +e
-          repomarshal done --base "$BASE_SHA" --waivers github --json > repomarshal-done.json
+          # shellcheck disable=SC2086
+          "$RM" done --base "$BASE_SHA" $WAIVERS --json > repomarshal-done.json
           code=$?
           set -e
           cat repomarshal-done.json

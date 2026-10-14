@@ -1,0 +1,4 @@
+# Code owners review changes here, and are the only humans whose labels or approving reviews can
+# waive RepoMarshal gates on this repository's PRs (docs/guides/waivers.md). Pair this file with
+# branch protection that requires code-owner review, especially for src/ and .github/workflows/.
+* @MHHamdan

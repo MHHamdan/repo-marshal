@@ -114,3 +114,14 @@ def test_output_tail_is_redacted(tmp_path: Path):
     code = "print('Authorization: Bearer s3cr3tvalue')"
     r = runner.run_gate(tmp_path, gate([PY, "-c", code]), CHANGE)
     assert not any("s3cr3tvalue" in line for line in r.output_tail)
+
+
+def test_ci_tokens_are_not_passed_to_gates(tmp_path: Path):
+    """The dogfood job's read token is for waivers; the gate runs the change's own code."""
+    import os
+
+    env = dict(os.environ, GITHUB_TOKEN="ghs_secret", GH_TOKEN="x", ACTIONS_RUNTIME_TOKEN="y")
+    names = "{'GITHUB_TOKEN', 'GH_TOKEN', 'ACTIONS_RUNTIME_TOKEN'}"
+    code = f"import os, sys; sys.exit(1 if {names} & set(os.environ) else 0)"
+    r = runner.run_gate(tmp_path, gate([PY, "-c", code]), CHANGE, env)
+    assert r.status is ResultStatus.PASS, r.output_tail
