@@ -27,7 +27,9 @@ integration tests that no repository has), `.tsx` test files (treated as UI), an
 (commands that rewrite files, ignore configuration, or use the wrong package manager; monorepo
 packages and Makefiles not read). Each one has a reproduction (§6). All 14 are fixed in v0.3; §9 re-measures the same 27 cases
 after the fixes (recall 1.000, precision 0.66 against the original judgment, about 0.80 when gates
-the old inventory could not see are counted by the same rules).
+the old inventory could not see are counted by the same rules). §10 measures the v0.6 precision
+fixes on the same cases: precision 0.661 → 0.727 against the frozen judgment (0.771 → 0.848
+rule-adjusted, now computed by `field_eval.py score --adjusted`), recall still 1.000.
 
 ## 2. Method
 
@@ -344,3 +346,100 @@ Zod's gates show as UNAVAILABLE in this re-run only because `nub` (its `packageM
 this machine's PATH; availability does not change which gates are selected. The §5 comparison of
 the inventory against each repository's CI was not redone by hand; each of its 8 findings has a
 passing test.
+
+## 10. After the v0.6 precision fixes
+
+Re-run on 2026-10-14 on branch `v06/precision`, same 27 cases, same clones (HEADs as in §3, clean
+afterwards), same SHAs, and the frozen `EXPECTED` (not edited). "Before" is the worktree's starting
+commit `25d89cf`, run from a `git archive` copy of it; "after" is this branch. Both were scored with
+the same `field_eval.py score OUT --adjusted`, which prints the frozen score and the rule-adjusted
+score. The three fixes:
+
+1. **Workspace coverage** (architecture §3.5). A workspace package's script gate is SKIPPED as
+   "covered by root:<kind>" when there is explicit evidence, read at BASE and confirmed in the
+   working tree, that the root script of the same kind already runs its checks: a recursive
+   workspace runner of the same script name (`pnpm -r`, `nub run -r`, `npm --workspaces`,
+   `yarn workspaces`, `turbo run`, `lerna run`, with no filter), or a root `vitest`/`jest` run
+   whose root config lists the package in `projects` while the package script is the bare
+   runner. No evidence keeps both gates. In zod, `vitest.config.ts` has
+   `projects: ["packages/*", "./vitest.compile.config.ts"]` and `packages/zod` / `packages/mini`
+   run plain `vitest run`, so both are covered by `root:unit`. `packages/tsc:lint` runs `tslint`,
+   which the root `biome lint .` does not run, so it stays.
+2. **Secrets on lockfile-only changes.** `dependency.changed` no longer triggers
+   `native:secrets-diff` when every file that raised it is a lockfile (both ends of a rename)
+   whose added lines are fully visible and carry no `scheme://user:pass@` URL; the decision says
+   so ("dependency.changed comes only from lockfiles (...); a lockfile-only change does not require
+   secrets"). Manifests, `requirements*.txt`, a binary (`bun.lockb`) or truncated lockfile diff,
+   and every other trigger still require it.
+3. **No integration for a dependency bump alone.** `dependency.changed` and `task.dependencies`
+   no longer trigger integration. `dep_audit` and the widened `unit` gates stay; auth paths,
+   migrations, `task.security`, `task.data`, test-tamper signals and elevated risk with code still
+   demand integration.
+
+```bash
+git archive 25d89cf src tests/field/field_eval.py | tar -x -C "$BEFORE_TREE"
+python "$BEFORE_TREE/tests/field/field_eval.py" run /tmp/claude-0/field "$OUT/before"
+python tests/field/field_eval.py run /tmp/claude-0/field "$OUT/after"
+python tests/field/field_eval.py score "$OUT/before" --adjusted
+python tests/field/field_eval.py score "$OUT/after" --adjusted
+```
+
+| Metric | `25d89cf` (before) | v0.6 (after) |
+|---|---|---|
+| Precision, frozen judgment | 0.661 (72 / 109) | **0.727** (72 / 99) |
+| Precision, rule-adjusted (`score --adjusted`) | 0.771 (84 / 109) | **0.848** (84 / 99) |
+| Recall | 1.000 (72 / 72) | 1.000 (72 / 72) |
+| Cases selecting an unnecessary expensive gate | 6 / 27 | **3 / 27** |
+| `plan` wall time, 135 runs, median / max (run A) | 0.251 s / 0.402 s | 0.267 s / 0.631 s |
+| `plan` wall time, 135 runs, median / max (run B) | 0.236 s / 0.379 s | 0.245 s / 0.440 s |
+| Context, selected / candidate | 16.6% | 16.6% |
+
+False positives by kind went from integration 6, unit 8, secrets 4, format 8, lint 6,
+typecheck 4, dep_audit 1 to integration **2**, unit **2**, secrets 4, format 8, lint 6,
+typecheck 4, dep_audit 1. The 10 removed are integration on the dependency changes click
+`3b16957`, rich `285d9e9`, express `3b7e39f` and zod `f6e1701` (4), and the six workspace package
+unit gates in zod `680d19f`, `07917f4`, `f6e1701` and `9c21983` (`packages/zod:unit` 4 times,
+`packages/mini:unit` twice). The three cases that no longer select an unnecessary expensive gate
+are click `3b16957`, express `3b7e39f` and zod `f6e1701`.
+
+**Latency.** Runs A (before, then after) and B (after, then before) were taken back to back on
+the same 4 vCPU container, which was noisier than in §4 (the same `25d89cf` code measured
+0.290 s median earlier in the session). Outside zod the medians are within 6 ms
+(0.230 → 0.236 s, 0.218 → 0.223 s). On zod, coverage reads the root vitest config and the
+package scripts in both trees: 0.332 → 0.386 s (A) and 0.318 → 0.344 s (B), i.e. about 25–55 ms.
+
+**The rule-adjusted score.** `--adjusted` counts a selected gate that `EXPECTED` does not list as
+needed when its kind is format, lint or typecheck and a `code.changed` or `tests.changed` file
+lies in its scope (the §2 rule "that scope's lint, format, typecheck and unit gates", applied to
+gates the 9cf7d64 inventory could not see). It gives 12 such gates in both runs (rich
+`root:format` in `7ef2d05`, `905b397`, `285d9e9`; zustand `root:format/lint/typecheck` in
+`3febf8c`, `95d3f33`, `1f531ba`). §9 counted 15 by hand (0.80). Its own stated rule gives 12;
+the 3 extra are most likely zustand `f094eeb`'s three widened gates, a CI-only change with no
+code or test file, which the stated rule does not cover. The reproducible number for the same
+before-state is 0.771.
+
+**Why secrets did not move.** §9 described the 4 secrets false positives as "secrets baseline
+on lockfile changes". None of the 4 is lockfile-only: click `3b16957` changes `pyproject.toml`
+(and `uv.lock`), rich `285d9e9` and express `3b7e39f` change only a manifest, and zod `f6e1701`
+changes two `package.json` files next to `pnpm-lock.yaml`. Fix (b) is therefore exercised by the
+unit tests and the zod `59bbc03`-style fixture
+(`test_lockfile_only_change_requires_neither_secrets_nor_integration`), not by these 27 cases. A real `pnpm-lock.yaml` bump is usually
+larger than the 2,000-line diff cap; a truncated lockfile diff still requires the secrets gate
+(fail closed), so on large bumps the exemption will often not apply.
+
+### Remaining false positives (27, against the frozen judgment)
+
+| Case | Gate | Why it is still selected |
+|---|---|---|
+| rich `7ef2d05`, `905b397`, `285d9e9` | `root:format` | Needed by the §2 rule (`make format-check`, found since v0.3); the frozen judgment predates it. Counted as needed by `--adjusted`. |
+| zustand `3febf8c`, `95d3f33`, `1f531ba` | `root:format`, `root:lint`, `root:typecheck` (9) | Same: `test:format`, `test:lint`, `test:types`, found since v0.3. Counted by `--adjusted`. |
+| rich `eccb594`, zustand `f094eeb` | `root:format` (1); `root:format/lint/typecheck` (3) | CI-only changes widen the cheap and standard gates. §2's CI rule ("the product's conservative default ... widened to every scope") requires them, and `EXPECTED` already lists the widened `T U` / `U` for these cases, so I believe the judgment is wrong here; `--adjusted` does not count them because no code or test file changed. |
+| click `3b16957`, express `3b7e39f`, zod `f6e1701` | `native:secrets-diff` | A manifest changed (`pyproject.toml`, `package.json`). Kept by design: only lockfile-only changes are exempt. Cheap. |
+| rich `285d9e9` | `dep_audit`, `native:secrets-diff` | `dependency.changed` fires on `[tool.poetry.dependencies] python = ">=3.9"`: Poetry keeps the interpreter floor in its dependency table. A real signal false positive; the fix is to discount the `python` key there (not done here, it is a signal change). |
+| zustand `1f531ba` | `integration` | Not from the dependency: `ci.changed` makes risk elevated and `code.changed` fires, which demands integration since v0.3. A rule-level disagreement with the judgment, unchanged by v0.6. |
+| zod `9c21983` | `integration` | Same rule: `.github/scripts/*.sh` is `ci.changed` (elevated) and a `.sh` file is `code.changed`. |
+| zod `f6e1701`, `9c21983` | `packages/tsc:lint` | Widening (`dependency.changed`, `ci.changed`) reaches every scope. Its `tslint` script is not run by the root `biome lint .`, so there is no coverage evidence and the gate stays (fail closed). |
+| zod `34a626f`, `e54716c` | `root:unit` | An `.mdx` page and a `.tsx` component under `packages/docs/`. The judgment calls the root unit gate unneeded, but `packages/docs` is a vitest project of the root run (`projects: ["packages/*"]`, `packages/docs/vitest.config.ts`) with its own tests (`content/api.test.ts` reads the docs' MDX). I think the judgment is debatable here; it is kept as written. |
+
+Zod's gates are still UNAVAILABLE in these runs because `nub` is not on this machine's PATH; that
+does not change which gates are selected.
