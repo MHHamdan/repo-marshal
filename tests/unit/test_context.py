@@ -289,3 +289,36 @@ def test_negative_budget_is_clamped(webapp):
     plan = select_context(repo.root, change, (), None, -5)
     assert plan.budget_tokens == 0
     assert paths(plan) == [(1, "docs/install.md")]
+
+
+def test_lockfile_and_generated_files_are_excluded_not_read(tmp_path):
+    repo, base = make_repo(
+        tmp_path,
+        {
+            "pnpm-lock.yaml": "a\n",
+            "web/app.min.js": "a\n",
+            "web/app.js.map": "a\n",
+            "web/dist/bundle.js": "a\n",
+            "web/src/app.ts": "a\n",
+            "data/huge.json": "a\n",
+        },
+    )
+    repo.write("pnpm-lock.yaml", "lock: 1\n" * 2000)
+    for p in ("web/app.min.js", "web/app.js.map", "web/dist/bundle.js", "web/src/app.ts"):
+        repo.write(p, "b\n")
+    repo.write("data/huge.json", "x" * (200 * 1024 + 4))
+    changed = ("pnpm-lock.yaml", "web/app.min.js", "web/app.js.map", "web/dist/bundle.js",
+               "web/src/app.ts", "data/huge.json")  # fmt: skip
+    change = change_of(base, *(ChangedFile(p, M) for p in changed))
+    plan = select_context(repo.root, change, (), None, 12_000)
+    assert [p for _, p in paths(plan)] == ["web/src/app.ts"]  # P1 keeps ordinary files
+    why = {i.path: i.why for i in plan.excluded}
+    assert set(why) == set(changed) - {"web/src/app.ts"}
+    assert why["pnpm-lock.yaml"].endswith("excluded: lockfile (generated) (4000 est. tokens)")
+    assert "minified bundle (generated)" in why["web/app.min.js"]
+    assert "source map (generated)" in why["web/app.js.map"]
+    assert "build output (generated)" in why["web/dist/bundle.js"]
+    assert "file over 200 KB" in why["data/huge.json"]
+    # the size estimate is honest: excluded files are candidates, not selected
+    assert plan.selected_tokens == sum(i.est_tokens for i in plan.items)
+    assert plan.candidate_tokens == plan.selected_tokens + sum(i.est_tokens for i in plan.excluded)
