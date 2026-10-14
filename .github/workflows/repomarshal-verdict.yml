@@ -1,0 +1,171 @@
+name: repomarshal-verdict
+# The authoritative RepoMarshal verdict for pull requests (v0.5, threat T31).
+#
+# GitHub runs a `workflow_run` workflow from the DEFAULT BRANCH only, so a pull request cannot
+# edit, rename or skip this file. It starts after the PR's `ci` workflow completes, reads GitHub's
+# own records of that run's rm-gate jobs, and posts the commit status `repomarshal/verdict` on the
+# PR head SHA. That status is the one required check (docs/guides/ci.md, "Branch protection").
+#
+# No PR code runs here. The PR head is checked out only as data for the plan; the judge is
+# installed from the PR's base commit, which is on the base branch, and every Python call is
+# isolated (-I) and runs outside the checkout.
+#
+# If the PR edits .github/workflows/ci.yml, the gate jobs ran a definition the PR chose, so the
+# judge reports UNKNOWN. If the PR renames or removes the `ci` workflow, this workflow never runs
+# and the required status stays missing, which also blocks the merge.
+#
+# Identity: with a GitHub App configured (secrets REPOMARSHAL_APP_CLIENT_ID and
+# REPOMARSHAL_APP_PRIVATE_KEY in the environment `repomarshal-verdict`, restricted to the default
+# branch), the status is posted as that App. Branch protection then pins the required check to
+# that App, and nothing a PR branch can run is able to post it. Without the App, the status is
+# posted with the workflow token, and a workflow on any branch can post a status with the same
+# name (docs/guides/ci.md explains the difference).
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  # One verdict at a time per commit, in trigger order; never cancel one half-way.
+  group: repomarshal-verdict-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  verdict:
+    # A cancelled ci run was superseded by a newer run for the same commit, which brings its own
+    # verdict. Runs that are not for a pull request post nothing.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: repomarshal-verdict
+    permissions:
+      contents: read
+      actions: read # the ci run's job records and artifacts
+      pull-requests: read # the PR, its labels and comments (waivers)
+      issues: read
+      statuses: write # the only write: the commit status
+    env:
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      HAS_APP: ${{ secrets.REPOMARSHAL_APP_CLIENT_ID != '' }}
+    steps:
+      - name: App token for the commit status
+        id: app
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.REPOMARSHAL_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REPOMARSHAL_APP_PRIVATE_KEY }}
+          permission-statuses: write
+      - name: mark pending
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+            -f state=pending -f context=repomarshal/verdict \
+            -f description="RepoMarshal is judging the gate results" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }} # data only, never executed
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Find the PR base
+        id: base
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/pulls" --jq \
+            "[.[] | select(.state == \"open\" and .head.sha == \"$HEAD_SHA\" and .base.repo.full_name == \"$GITHUB_REPOSITORY\")] | if length == 1 then .[0].base.sha else \"\" end")
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/pulls" --jq \
+            "[.[] | select(.state == \"open\" and .head.sha == \"$HEAD_SHA\")] | if length == 1 then .[0].base.ref else \"\" end")
+          if ! printf '%s' "$base" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "no single open PR has $HEAD_SHA as its head"; exit 1
+          fi
+          # The judge is installed from the base commit: it must be on the base branch.
+          git -C "$GITHUB_WORKSPACE/pr" merge-base --is-ancestor "$base" "origin/$ref"
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+      - name: Install the judge (RepoMarshal) from the PR's BASE commit
+        working-directory: ${{ runner.temp }}
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/rm-base"
+          git -C "$GITHUB_WORKSPACE/pr" archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/rm-base"
+          python -I -m venv "$RUNNER_TEMP/rm-venv"
+          "$RUNNER_TEMP/rm-venv/bin/python" -I -m pip install --quiet "$RUNNER_TEMP/rm-base"
+      - name: Install the gate tools (ruff, pytest) from BASE's dev requirements
+        # Not run here; installed so tool availability, which is part of the plan, matches the
+        # ci run's plan and gate jobs.
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$RUNNER_TEMP/rm-venv/bin/python" -I - "$RUNNER_TEMP/rm-base/pyproject.toml" \
+            > "$RUNNER_TEMP/dev-requirements.txt" <<'PY'
+          import sys, tomllib
+          with open(sys.argv[1], "rb") as f:
+              print("\n".join(tomllib.load(f)["project"]["optional-dependencies"]["dev"]))
+          PY
+          python -I -m pip install --quiet -r "$RUNNER_TEMP/dev-requirements.txt"
+      - name: Download the gate results of the ci run
+        continue-on-error: true # a missing result is UNKNOWN in the verdict
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          pattern: rm-gate-*
+          path: ${{ runner.temp }}/rm-results
+      - name: repomarshal verdict
+        id: judge
+        working-directory: ${{ runner.temp }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/rm-results"
+          set +e
+          "$RUNNER_TEMP/rm-venv/bin/repomarshal" ci trusted-verdict \
+            --repo "$GITHUB_WORKSPACE/pr" --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" \
+            --head-sha "$HEAD_SHA" --results "$RUNNER_TEMP/rm-results" --github-output --json \
+            > "$RUNNER_TEMP/repomarshal-verdict.json"
+          code=$?
+          set -e
+          cat "$RUNNER_TEMP/repomarshal-verdict.json"
+          echo "repomarshal exit code: $code (0 PASS, 1 FAIL, 2 UNKNOWN, 3 BLOCKED, 4 error)"
+          exit "$code"
+      - name: post the verdict status
+        if: always()
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
+          STATE: ${{ steps.judge.outputs.state }}
+          DESCRIPTION: ${{ steps.judge.outputs.description }}
+        run: |
+          # Only the judge's own output can say success; anything missing is an error.
+          case "$STATE" in
+            success|failure|error) ;;
+            *) STATE=error; DESCRIPTION="The RepoMarshal judge did not finish; see the run" ;;
+          esac
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+            -f state="$STATE" -f context=repomarshal/verdict -f description="$DESCRIPTION" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: repomarshal-verdict-evidence
+          path: |
+            ${{ runner.temp }}/repomarshal-verdict.json
+            pr/.repomarshal/evidence/
+          if-no-files-found: warn
+          retention-days: 30

@@ -76,15 +76,15 @@ jobs:
       - name: MCP server tests
         run: python -m pytest -o addopts="" -q tests/unit/test_mcp_server.py tests/unit/test_contract.py
 
-  # Dogfood: the authoritative verdict for this repository's PRs, judged by RepoMarshal from BASE
-  # (v0.4, threat T26). Three stages, so that the PR's code never runs where the judge reads
-  # policy, waivers or results:
-  #   rm-plan   judge only: plan, PR-head binding, gate matrix. No PR code runs.
+  # Gate execution for the RepoMarshal verdict (v0.4 T26, v0.5 T31). This file comes from the PR,
+  # so nothing here is authoritative on its own:
+  #   rm-plan   judge only: plan, gate matrix. No PR code runs.
   #   rm-gate-N one fresh job per gate that runs PR code, with NO token permissions.
-  #   dogfood   judge only, on a fresh runner: re-plan, re-read waivers, bind each gate result to
-  #             GitHub's own record of its job (Actions API), fold. No PR code runs.
-  # While BASE's judge predates `repomarshal ci` (v0.3), dogfood falls back to the single-job
-  # `repomarshal done`, which runs the gates itself.
+  #   dogfood   ADVISORY verdict inside this PR-controlled workflow (kept for transition).
+  # The authoritative verdict is .github/workflows/repomarshal-verdict.yml, which GitHub runs from
+  # the default branch after this workflow completes (workflow_run). It reads GitHub's records of
+  # the rm-gate jobs, refuses them if this PR changed this file, and posts the commit status
+  # `repomarshal/verdict` on the PR head. Make that status the required check, not `dogfood`.
   rm-plan:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -102,7 +102,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }} # the same commit in every job of the run
+          # The PR head itself (not GitHub's merge commit): the trusted verdict workflow binds
+          # every result to this SHA and posts its status on it (v0.5).
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -167,7 +169,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }} # the same commit in every job of the run
+          # The PR head itself (not GitHub's merge commit): the trusted verdict workflow binds
+          # every result to this SHA and posts its status on it (v0.5).
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -231,6 +235,7 @@ jobs:
           retention-days: 30
 
   dogfood:
+    name: dogfood (advisory)
     needs: [rm-plan, rm-gate]
     if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -243,7 +248,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }} # the same commit in every job of the run
+          # The PR head itself (not GitHub's merge commit): the trusted verdict workflow binds
+          # every result to this SHA and posts its status on it (v0.5).
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
