@@ -19,7 +19,7 @@ def test_zero_config_inventory(webapp):
         "frontend:unit": (GateKind.UNIT, ("npm", "run", "test")),
         "frontend:runtime": (GateKind.RUNTIME, ("npm", "run", "test:e2e")),
         "frontend:a11y": (GateKind.A11Y, ("npm", "run", "test:a11y")),
-        "backend:lint": (GateKind.LINT, ("ruff", "check", ".")),
+        "backend:lint": (GateKind.LINT, ("ruff", "check", "--no-fix", ".")),
         "backend:typecheck": (GateKind.TYPECHECK, ("mypy", ".")),
         "backend:unit": (
             GateKind.UNIT,

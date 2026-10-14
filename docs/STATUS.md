@@ -1,6 +1,6 @@
 # RepoMarshal — Session Status
 
-_Last updated: 2026-10-13_
+_Last updated: 2026-10-14_
 
 ## Current phase
 
@@ -19,8 +19,8 @@ v0.3 scope (from the owner):
 |---|---|---|---|---|
 | override | `v03/override` | waivers: `repomarshal waive`, GitHub label/review waivers in CI, dogfood job wiring | `src/repomarshal/waivers.py`, `tests/unit/test_waivers.py`, `.github/workflows/ci.yml`, `docs/guides/ci.md`, `docs/guides/waivers.md` | **merged**; lead hardening: judge installed from BASE in dogfood, CI tokens stripped from gates, CODEOWNERS added |
 | hook-loop | `v03/hook-loop` | allow a stop on a repeated, unchanged non-PASS (with `systemMessage` UNVERIFIED); never on a new or worse verdict | `src/repomarshal/hooks.py`, `tests/unit/test_hooks.py`, `tests/unit/test_hook_loop.py` | **merged** |
-| fix-inv | `v03/fix-inv` | the field findings in the inventory (ruff --no-fix, mypy files, check scripts, packageManager, test:* scripts, Makefile, pytest.ini in tests/, workspace scopes) | `inventory.py`, `tests/unit/test_inventory.py` | in progress |
-| fix-sig | `v03/fix-sig` | the field findings in signals, decisions and context (`dependency.changed`, .test.tsx not UI, `.github/scripts` as CI, integration only with code or specific triggers, lockfiles out of context) | `signals.py`, `decisions.py`, `context.py` and their unit tests | in progress |
+| fix-inv | `v03/fix-inv` | the field findings in the inventory (ruff --no-fix, mypy files, check scripts, packageManager, test:* scripts, Makefile, pytest.ini in tests/, workspace scopes) | `inventory.py`, `tests/unit/test_inventory.py` | **merged**; all 23 field tests pass |
+| fix-sig | `v03/fix-sig` | the field findings in signals, decisions and context (`dependency.changed`, .test.tsx not UI, `.github/scripts` as CI, integration only with code or specific triggers, lockfiles out of context) | `signals.py`, `decisions.py`, `context.py` and their unit tests | **merged** |
 | adapters | `v03/adapters` | SkillSpector (`skill_audit`) and Playwright (`runtime`) providers, plus the `agent.skill_changed` signal | `src/repomarshal/providers/**`, `tests/unit/test_provider_*.py`, the `agent.skill_changed` rule in `signals.py` | **merged**; SkillSpector pinned to the v2.12.0 tag `c7958a3` (provenance corrected), Playwright 1.63.0 |
 | field-test | `v03/field-test` | `plan` / `done --dry-run` on 5 real repositories; findings as fixtures plus failing tests | `docs/evaluation.md`, `tests/field/**`, `tests/fixtures/field/**` | **merged**: 27 commits on 5 repos, gate precision 0.80, recall 0.94, 14 findings |
 
@@ -37,8 +37,8 @@ Contract (committed):
 
 ## Next step
 
-Launch the four agents in worktrees `/home/user/wt-<agent>` on branches `v03/<agent>`, then
-integrate one branch at a time and fix the field-test findings. Then run a fresh fail-open
+All agents are merged and all 14 field findings are fixed (suite: 1142 passed, 23 field, 38 MCP).
+Next: dedupe runtime gates superseded by the Playwright provider (`providers.superseded`), then run a fresh fail-open
 reviewer on the waivers, the hook loop and the adapters, and open the PR `claude/v0.3` → `main`
 with `gh pr create`. Report the dogfood job result.
 

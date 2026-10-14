@@ -26,7 +26,7 @@ from repomarshal.model import DecisionStatus, Gate, GateDecision, Plan
 from tests.helpers import GitRepo, env_with_path, stub_bin
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "field"
-STUB_TOOLS = ("npm", "pnpm", "yarn", "ruff", "mypy", "pyright", "python", "make")
+STUB_TOOLS = ("npm", "pnpm", "yarn", "ruff", "mypy", "pyright", "python", "make", "nub")
 SELECTED = (DecisionStatus.REQUIRED, DecisionStatus.UNAVAILABLE)
 EXPENSIVE_KINDS = ("integration", "runtime", "a11y", "dep_audit", "security_scan", "skill_audit")
 
