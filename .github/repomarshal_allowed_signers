@@ -1,0 +1,5 @@
+# RepoMarshal waiver signers (v0.8, threat T40). Read from the BASE commit by the CI judge.
+# One line per key: <GitHub login> <options> <public key>. Use a FIDO key that needs a touch
+# (sk-ssh-ed25519@openssh.com) and never add `no-touch-required`. See docs/guides/waivers.md.
+#
+# MHHamdan namespaces="repomarshal-waiver",verify-required sk-ssh-ed25519@openssh.com AAAA... repomarshal waivers

@@ -176,7 +176,7 @@ that exist in code, or that are scheduled as v0.1 MUST/SHOULD in the roadmap.
 | T31 | **The workflow file comes from the PR.** On `pull_request` events GitHub runs the PR's own `ci.yml`, so a PR can rewrite or remove the rm-plan, rm-gate and dogfood jobs | 2 | 3 | **Closed in v0.5**, with one setup step. The verdict comes from `repomarshal-verdict.yml` (`workflow_run`, always the default-branch copy). It refuses gate records when the PR changed `ci.yml`, binds them to the PR head SHA, and posts the commit status `repomarshal/verdict`. A PR that removes or renames `ci` leaves the required status missing. Forgery of the status itself is closed only when the status is posted by a GitHub App whose key is in a default-branch-only environment and branch protection pins the check to that App (T35) |
 | T32 | A gate's own PR code can rewrite its result file (including `tree_after`) after `repomarshal ci gate` writes it and before upload | 2 | 1 | Inside T30: it lies only about itself, and the status comes from GitHub's step record |
 | T34 | A `push` run on a PR branch adds a skipped `dogfood` check (skipped counts as success) to the PR head commit, next to the PR run's real verdict | 2 | 3 | Fixed during PR #3 CI: `push` now runs on `main` only, guarded by a static test |
-| T33 | Waiver labels persist across new pushes | 2 | 2 | Unchanged since v0.3. Remove `repomarshal-waive:*` labels once they no longer apply |
+| T33 | Waiver labels persist across new pushes | 2 | 2 | Unchanged since v0.3 for unsigned waivers. Remove `repomarshal-waive:*` labels once they no longer apply. Signed waivers (v0.8) are bound to the head SHA |
 
 ### v0.5: the trusted verdict
 
@@ -247,6 +247,64 @@ gate that runs `python -I` or `-E`, because those ignore the variable. This narr
 |---|---|---|---|---|
 | T38 | Configuration that a root vitest/jest config imports from another file (e.g. `./vitest.shared.ts`) is not tracked for coverage | 1 | 2 | An edit to such a file is not a coverage-voiding change. Keep shared config in the root config file, or expect package gates to be skipped only when the root config itself lists them |
 | T39 | A turbo remote cache replays an earlier result | 1 | 2 | The replay is for identical inputs; turbo's cache keys are outside RepoMarshal |
+
+### v0.8: signed waiver codes (T40)
+
+| # | Threat | L | I | Note |
+|---|---|---|---|---|
+| T40 | **A local agent self-grants author waivers.** An agent that uses the owner's `gh` CLI login or a personal access token creates label and comment events with `performed_via_github_app: null`. To the GitHub API, and in the web UI, these are the owner's own actions. With `allow_author_waivers`, the agent can turn any UNKNOWN into PASS | 3 | 3 | **Mitigated in v0.8** by SSH-signed waiver codes (below). Exactly as strong as the signing key's protection |
+
+The v0.4 check (`performed_via_github_app` must be null) separates the owner from an agent acting
+through a GitHub App. It cannot separate the owner from an agent holding the owner's own
+credentials, because GitHub records no difference between a browser session, the `gh` CLI and a
+personal access token. So the proof of a human has to come from something the agent cannot
+use.
+
+**Options weighed:**
+
+| Option | Human-only? | Solo maintainer? | Verdict |
+|---|---|---|---|
+| A second GitHub account must approve | No: the agent may hold that account's token too, and the reviews API has no `performed_via_github_app` at all (v0.4) | No | Rejected |
+| Required reviewers on a deployment environment | No: `POST /actions/runs/{id}/pending_deployments` approves with the owner's token | Yes | Rejected: same T40 hole |
+| Restrict the owner's tokens (fine-grained PAT without `issues: write`, no `gh` login on the agent's machine) | Only if followed; the judge cannot check it | Yes | Recommended hygiene, not a control |
+| TOTP code from an authenticator app in the comment | Yes (the phone) | Yes | Rejected: the verifier needs the shared secret in CI, the 6-digit code is not bound to the PR, head or target, and a leaked secret is silent |
+| Signed commit of a waiver file | As strong as the key | Yes | Rejected: the commit changes the head being judged, so it needs a second run and its own exemption from the plan |
+| **SSH-signed code in the reason comment** | **As strong as the key: human-only with a FIDO key that needs a touch** | **Yes** | **Chosen** |
+
+**How it works.** The BASE policy names an SSH allowed-signers file
+(`completion.waiver_signers`), read from the BASE commit like the policy itself, so a PR cannot
+add a key for itself. The reason comment for a label waiver must also carry the line
+`repomarshal-waive-sig <target> <signature>`. The signature is made with `ssh-keygen -Y sign` in
+the namespace `repomarshal-waiver` (`repomarshal waive-sign` does this). It covers the
+repository, PR number, PR head SHA, target and reason. The judge runs `ssh-keygen -Y verify`
+with the commenter's GitHub login as the principal. Consequences:
+
+- A waiver cannot be replayed on another repository, PR, push, target or reason. A new push needs
+  a new signature, which also closes T33 for signed waivers.
+- A signature the owner made for something else (a git commit uses the namespace `git`) does not
+  verify.
+- All the v0.4 rules still apply. The label and the comment must be human-made, not through an
+  app, and not edited. The comment line must be prose. The label must be on the PR now.
+- Author waivers are accepted **only** with a verified signature. `allow_author_waivers = true`
+  without `waiver_signers` now rejects them, with a note. This is a deliberate breaking change.
+- Other maintainers' waivers need a signature too when `waiver_signers` is set. Without it they
+  keep the v0.4 rules.
+- Fail closed: a missing signers file at BASE, an unknown head SHA, a missing `ssh-keygen`, or any
+  verification error rejects the waiver.
+
+**Only as strong as the key's protection:**
+
+| Key | Who can sign |
+|---|---|
+| FIDO hardware key (`ed25519-sk` / `ecdsa-sk`), touch required (the default) | Only a person touching the key. `ssh-keygen -Y verify` rejects an sk signature made without user presence unless the allowed-signers line says `no-touch-required`, so never add that option |
+| The same with `-O verify-required` and `verify-required` in allowed-signers | Only a person who knows the PIN and touches the key |
+| Software key, passphrase, **not** loaded in ssh-agent | Anyone who can read the file and get the passphrase. An agent that reads a typed passphrase (e.g. from shell history) can sign |
+| Software key loaded in ssh-agent, or without a passphrase | **Any process running as the owner, the agent included.** No protection against T40 |
+
+| # | Remaining threat (v0.8) | L | I | Note |
+|---|---|---|---|---|
+| T41 | The signing key is a software key the agent can use | 2 | 3 | Use a FIDO key that needs a touch. The judge cannot tell from a signature how the key is stored. The allowed-signers file states the key type, so review it |
+| T42 | An agent with the owner's token merges a PR that adds its own key to the allowed-signers file | 1 | 3 | The file is read at BASE, so this requires a merge into the default branch. Branch protection, with no bypass for administrators, and the owner's own review of every change to that file stop it (this is T36 again) |
 
 ## Residual risks that must be stated in the README
 

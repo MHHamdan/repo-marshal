@@ -96,6 +96,10 @@ pull request with a waiver. The full rules are in [waivers.md](waivers.md); in s
   bot; never the PR author unless BASE sets `allow_author_waivers = true`. Reviews never grant a
   waiver: the reviews API cannot show they were not made through an app. CODEOWNERS is read at
   BASE.
+- **Signed codes (v0.8):** with `waiver_signers` at BASE, the comment must also carry a
+  `repomarshal-waive-sig <target> <sig>` line, an SSH signature over the repository, PR, head SHA,
+  target and reason (`repomarshal waive-sign`). An author waiver is accepted only with one. The
+  judge needs `ssh-keygen`, which GitHub's Ubuntu runners have.
 - **Counts only if BASE permits:** `[completion] waivers_permit_pass = true` in `repomarshal.toml`
   on the base branch. Otherwise a waived gate stays UNKNOWN.
 - **Never waivable:** a FAIL, a tree that changed during the run, opaque content, "nothing was
@@ -275,7 +279,7 @@ How it works:
    the UNKNOWN reason prints it). A later rewrite of `ci.yml` has another blob id, so it is not
    covered by the same label. The usual waiver rules apply:
    made by a person, not through an app; BASE `waivers_permit_pass`; author only with
-   `allow_author_waivers`. It accepts the workflow change, not any gate result, and is recorded
+   `allow_author_waivers` and a signed code (v0.8). It accepts the workflow change, not any gate result, and is recorded
    in the evidence. If a PR renames or deletes the `ci` workflow, `repomarshal-verdict` never
    runs, and the required status stays "Expected", which blocks the merge. A missing or skipped
    `rm-gate-N` job is UNKNOWN.

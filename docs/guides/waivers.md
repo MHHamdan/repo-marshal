@@ -32,6 +32,9 @@ waivers_permit_pass = true
 # v0.4, optional: let the PR author grant a waiver. Needed when one maintainer opens every PR
 # (GitHub does not let an author approve their own PR, and nobody else can grant one).
 allow_author_waivers = true
+# v0.8: an SSH allowed-signers file at BASE. Every label waiver then needs a signed code, and an
+# author waiver is accepted ONLY with one (see "Signed waiver codes" below).
+waiver_signers = ".github/repomarshal_allowed_signers"
 ```
 
 Without `waivers_permit_pass`, waived gates are still listed (in the reasons and the evidence record) but the verdict
@@ -68,7 +71,10 @@ The waiver is genuine when:
   non-empty reason. No reason, no waiver. The line must be prose: inside a code block, an
   indented block, a block quote or an HTML comment it does not count. The comment must not
   have been edited after it was posted (an edit can come from an app acting as you); post a
-  new comment instead.
+  new comment instead;
+- when the BASE policy sets `waiver_signers` (v0.8), that same comment also carries a valid
+  signed code for the PR's current head (next section). An author waiver needs this in every
+  case.
 
 **Reviews do not grant waivers (v0.4).** Earlier versions also accepted an approving CODEOWNER
 review with a `repomarshal-waive <target>: <reason>` line. No GitHub API says whether a review was
@@ -96,23 +102,105 @@ healthy.
 The CI workflow re-runs on `labeled`, `unlabeled` and review `submitted`/`dismissed` events, so
 adding or removing a waiver updates the status check.
 
+## Signed waiver codes (v0.8, threat T40)
+
+**Why.** A coding agent on your machine that can use your `gh` login or a personal access token
+makes labels and comments that GitHub records as yours, with `performed_via_github_app: null`,
+exactly like your clicks in the web UI. Nothing in the GitHub API tells the two apart. So since
+v0.8 an author waiver must also prove that a person with your signing key approved it. The
+alternatives that were weighed are in the threat model, T40.
+
+**It is only as strong as the key's protection.** Use a FIDO hardware key that needs a touch
+for every signature (`ed25519-sk`). An agent can ask the key to sign, but only your finger
+completes it. **Touch the key only when you started the signature yourself.** A software key
+that is loaded in `ssh-agent`, or has no passphrase, can be used by any process running as you,
+the agent included, and then protects nothing.
+
+### One-time setup
+
+1. Create a hardware-backed signing key (OpenSSH 8.2 or later, and a FIDO2 key):
+
+   ```sh
+   ssh-keygen -t ed25519-sk -O verify-required -C "repomarshal waivers" -f ~/.ssh/id_repomarshal_sk
+   ```
+
+   `-O verify-required` also asks for the key's PIN. Leave it out if your key has no PIN.
+2. Add your public key to the allowed-signers file, with your **GitHub login** as the principal,
+   spelled exactly as on your GitHub profile (the match is case-sensitive), and commit it to the
+   default branch. `namespaces=` limits this key to waiver codes:
+
+   ```text
+   # .github/repomarshal_allowed_signers
+   MHHamdan namespaces="repomarshal-waiver",verify-required sk-ssh-ed25519@openssh.com AAAA... repomarshal waivers
+   ```
+
+   Drop `verify-required` from the line if you dropped it in step 1. Never add
+   `no-touch-required`.
+3. Name the file in `repomarshal.toml` (`waiver_signers`, above). Both files are read from BASE,
+   so they take effect after they merge. Review every later change to the signers file yourself:
+   whoever can add a key there can grant waivers (T42).
+
+### Granting a waiver
+
+For each target, on the PR's **current** head:
+
+```sh
+repomarshal waive-sign root:unit \
+  --reason "discovery taint comes only from test fixture pyproject files" \
+  --repository MHHamdan/repo-marshal --pr 7 \
+  --head "$(gh pr view 7 --json headRefOid -q .headRefOid)" \
+  --key ~/.ssh/id_repomarshal_sk
+```
+
+It asks for a touch (and PIN), then prints two lines:
+
+```text
+repomarshal-waive root:unit: discovery taint comes only from test fixture pyproject files
+repomarshal-waive-sig root:unit U1NIU0lHAAAAAQAAAEoAAAAac2stc3NoLWVkMjU1MTlAb3BlbnNzaC5jb20...
+```
+
+Paste them into a **new** PR comment as plain text (not in a code block), with no edits. Codes
+for several targets can share one comment. Then apply the label `repomarshal-waive:root:unit`.
+Post the comment first: adding the label is what re-runs CI.
+
+Without RepoMarshal installed, the same code is:
+
+```sh
+printf 'repomarshal-waiver/1\nrepository: %s\npr: %s\nhead: %s\ntarget: %s\nreason: %s\n' \
+  MHHamdan/repo-marshal 7 "$HEAD_SHA" root:unit "discovery taint comes only from test fixture pyproject files" \
+  | ssh-keygen -Y sign -f ~/.ssh/id_repomarshal_sk -n repomarshal-waiver | sed '1d;$d' | tr -d '\n'
+```
+
+The reason must match the comment's reason exactly.
+
+**What the code binds.** It covers the repository, PR number, head SHA, target and reason. It is
+checked with `ssh-keygen -Y verify` against the allowed-signers file at BASE, with the comment
+author's login as the principal. A new push makes it invalid, so sign again for the new head. A
+code for another PR, target or reason, or one made with any other key, is rejected with a note
+in the CI log.
+
+**Fail closed.** If the signers file is missing at BASE, the head SHA is unknown, or `ssh-keygen`
+is missing on the runner (GitHub's Ubuntu runners have it), no signed waiver is accepted.
+
 ### What the agent can and cannot do
 
 The coding agent usually works as the PR author. Unless the policy allows author waivers, that
 excludes it outright. Either way it cannot apply a label as somebody else, write a comment as
 somebody else, or change CODEOWNERS or the policy at BASE. When it acts through a GitHub App, even
 under the maintainer's own account, its labels and comments carry `performed_via_github_app` and
-are rejected. This depends on the agent **not** holding a maintainer's own credentials outside
-an app (a personal access token, a logged-in `gh` or browser session): whoever holds those is, to
-GitHub, that maintainer, and nothing in the API can tell them apart.
+are rejected. An agent holding a maintainer's own credentials outside an app (a personal access
+token, a logged-in `gh` or browser session) is, to GitHub, that maintainer (T40). With
+`waiver_signers` set, it still cannot produce the signed code unless it can use the signing key,
+which a touch-to-sign hardware key prevents.
 
 Residual risks to know about:
 
 - Anyone with write access can edit another user's comment, so a writer could change the reason
   text of a human's label waiver. The label (and so the target) still has to come from an
   authorised human.
-- A label waiver is not bound to a commit: it stays valid after later pushes until someone removes
-  the label. Remove `repomarshal-waive:*` labels once they are no longer meant to apply.
+- An unsigned label waiver is not bound to a commit: it stays valid after later pushes until
+  someone removes the label. Remove `repomarshal-waive:*` labels once they are no longer meant to
+  apply. A signed waiver is bound to the head SHA.
 - The CI job runs the PR's own code, including, in this repository, RepoMarshal itself. Protect
   `.github/workflows/` and `src/` with CODEOWNERS and required code-owner review (see
   [ci.md §4](ci.md#4-trust-caveats)).

@@ -10,3 +10,7 @@ waivers_permit_pass = true
 # own PR, so the author must be able to grant a label waiver. Changes made through a GitHub App
 # (e.g. a coding agent acting under the maintainer's account) are still rejected.
 allow_author_waivers = true
+# v0.8 (T40): a local agent using the maintainer's gh login is indistinguishable from the
+# maintainer, so an author waiver also needs a code signed with a key listed in this file (read at
+# BASE). Until the file lists a key, no author waiver is accepted.
+waiver_signers = ".github/repomarshal_allowed_signers"

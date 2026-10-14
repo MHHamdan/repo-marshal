@@ -126,8 +126,11 @@ settings. The authoritative verdict comes from CI (see below).
 - **Waivers, human only:** when a required gate cannot run, a maintainer can accept the gap for one
   change: in CI with a `repomarshal-waive:<gate>` PR label plus a reason comment, both made by a
   person (anything done through a GitHub App, such as a coding agent acting under the
-  maintainer's account, is rejected); locally with `repomarshal waive <gate> --reason ...` at a
-  terminal. A waiver
+  maintainer's account, is rejected). A local agent using the maintainer's own `gh` login looks
+  like the maintainer, so with `waiver_signers` the comment must also carry a code signed with the
+  maintainer's SSH key (`repomarshal waive-sign`; a touch-to-sign hardware key makes this
+  human-only). Author waivers always need it. Locally, use `repomarshal waive <gate> --reason ...`
+  at a terminal. A waiver
   never turns a FAIL into a PASS, counts only when the BASE `repomarshal.toml` sets
   `[completion] waivers_permit_pass = true`, and is recorded in the evidence. The Stop hook and the
   MCP server never accept waivers. See [`docs/guides/waivers.md`](docs/guides/waivers.md).

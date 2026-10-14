@@ -89,6 +89,16 @@ threat model priorities.
   quickstart also surfaced a bug, now fixed: gates no longer write `__pycache__/` into the tree
   (`PYTHONPYCACHEPREFIX`).
 
+## Done in v0.7 and v0.8
+
+- **v0.7:** Poetry's `python` constraint no longer counts as a dependency change (field
+  precision 0.742, adjusted 0.866).
+- **v0.8, signed waiver codes (T40):** a local agent using the owner's `gh` login is
+  indistinguishable from the owner, so with `completion.waiver_signers` a label waiver also needs
+  an SSH signature over the repository, PR, head SHA, target and reason, verified against an
+  allowed-signers file at BASE. Author waivers require it. `repomarshal waive-sign` prints the
+  comment.
+
 ## SHOULD: next, in priority order
 
 1. **Evidence hash chain** (`prev_digest`) and a `status` command that reports STALE.
