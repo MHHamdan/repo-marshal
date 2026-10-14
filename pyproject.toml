@@ -1,27 +1,49 @@
 [build-system]
-requires = ["hatchling>=1.25"]
+requires = ["hatchling==1.27.0"]  # pinned: release builds must be reproducible
 build-backend = "hatchling.build"
 
 [project]
 name = "repomarshal"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Compile each repository change into an explained plan of required checks, then return an evidence-backed completion verdict."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "Mohammed Hamdan" }]
+keywords = ["ci", "coding-agents", "verification", "claude-code", "mcp", "git"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = []  # ADR-001: the core is stdlib-only
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "jsonschema>=4.23", "ruff>=0.6"]
 mcp = ["mcp>=2.3,<3"]
 
+[project.urls]
+Homepage = "https://github.com/MHHamdan/repo-marshal"
+Documentation = "https://github.com/MHHamdan/repo-marshal/tree/main/docs"
+Issues = "https://github.com/MHHamdan/repo-marshal/issues"
+
 [project.scripts]
 repomarshal = "repomarshal.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/repomarshal"]
+
+[tool.hatch.build.targets.sdist]
+# Source, tests, docs and licence only: no workflow files, agent instructions or local state.
+include = ["/src/repomarshal", "/tests", "/docs", "/README.md", "/LICENSE", "/pyproject.toml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests"]
