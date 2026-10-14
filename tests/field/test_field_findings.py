@@ -196,7 +196,10 @@ def test_workspace_packages_are_gate_scopes(tmp_path):
     plan = case.plan()
     pkg_unit = [g for g in plan.inventory if g.kind == "unit" and g.scope == "packages/zod/"]
     assert len(pkg_unit) == 1, explain(plan)
-    assert status_of(plan, pkg_unit[0].id) == DecisionStatus.REQUIRED, explain(plan)
+    # v0.6: the package's tests are run by the root vitest projects, so the package gate is
+    # decided (SKIPPED as covered) rather than invisible; see the v0.6 tests below.
+    assert pkg_unit[0].covered_by == "root:unit", explain(plan)
+    assert status_of(plan, "root:unit") == DecisionStatus.REQUIRED, explain(plan)
 
 
 # ---- signals and decisions
@@ -345,3 +348,44 @@ def test_ci_script_with_token_line_requires_secrets_scan(tmp_path):
     baseline runs even though the CI classification is missed (see the fieldfinding above)."""
     plan = build(tmp_path, "zod-like", "change-ci-script").plan()
     assert status_of(plan, "native:secrets-diff") == DecisionStatus.REQUIRED, explain(plan)
+
+
+# ====================================================================== v0.6 precision fixes
+
+
+def test_root_vitest_projects_cover_the_package_unit_gate(tmp_path):
+    """colinhacks/zod 680d19f (also 07917f4, f6e1701, 9c21983): the root `vitest run` reads
+    vitest.config.ts `projects: ["packages/*", ...]`, so `packages/zod:unit` (`vitest run` in the
+    package) ran the same tests a second time. Only the root gate is required now."""
+    plan = build(tmp_path, "zod-like", "change-src").plan()
+    assert status_of(plan, "root:unit") == DecisionStatus.REQUIRED, explain(plan)
+    assert status_of(plan, "packages/zod:unit") == DecisionStatus.SKIPPED, explain(plan)
+    [pkg] = [d for d in plan.gates if d.gate_id == "packages/zod:unit"]
+    assert pkg.reasons[0].text.startswith("covered by root:unit (required): root vitest reads ")
+    assert [d.gate_id for d in required_of_kind(plan, "unit")] == ["root:unit"], explain(plan)
+
+
+def test_lockfile_only_change_requires_neither_secrets_nor_integration(tmp_path):
+    """colinhacks/zod 59bbc03 changes only pnpm-lock.yaml: unit (widened) and dep_audit, but no
+    secrets baseline and no integration tests. The package unit gate stays covered by the root
+    one; `packages/tsc:lint` (tslint) is not covered by the root biome lint, so it stays."""
+    plan = build(tmp_path, "zod-like", "change-lockfile").plan()
+    assert status_of(plan, "native:secrets-diff") == DecisionStatus.SKIPPED, explain(plan)
+    [sec] = [d for d in plan.gates if d.gate_id == "native:secrets-diff"]
+    assert sec.reasons[0].text.startswith("dependency.changed comes only from lockfiles")
+    assert selected_expensive(plan) == ["dep_audit"], explain(plan)
+    assert status_of(plan, "root:unit") == DecisionStatus.REQUIRED, explain(plan)
+    assert status_of(plan, "packages/zod:unit") == DecisionStatus.SKIPPED, explain(plan)
+    assert status_of(plan, "packages/tsc:lint") == DecisionStatus.REQUIRED, explain(plan)
+
+
+def test_manifest_dependency_bump_requires_secrets_but_not_integration(tmp_path):
+    """colinhacks/zod f6e1701 bumps `next` in packages/docs/package.json and the lockfile (and
+    expressjs/express 3b7e39f bumps `qs` in package.json): a manifest changed, so the secrets
+    baseline stays; integration is no longer demanded by a dependency bump alone."""
+    for fixture, variant in (("zod-like", "change-deps"), ("express-like", "change-deps")):
+        plan = build(tmp_path / variant / fixture, fixture, variant).plan()
+        assert "dependency.changed" in signal_ids(plan), explain(plan)
+        assert status_of(plan, "native:secrets-diff") == DecisionStatus.REQUIRED, explain(plan)
+        assert selected_expensive(plan) == ["dep_audit"], explain(plan)
+        assert status_of(plan, "root:unit") == DecisionStatus.REQUIRED, explain(plan)
