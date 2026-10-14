@@ -205,7 +205,7 @@ or decides anything. This repository's own `ci.yml` dogfood jobs are the referen
 | Job | Runs PR code | Permissions | Does |
 |---|---|---|---|
 | `rm-plan` | no | contents, pull-requests, issues: read | `repomarshal ci plan --base SHA --github-output`: the plan, a check that the checkout is the PR head (or GitHub's merge commit of it), the waivers for the record, and a matrix of the gates that run repository code |
-| `rm-gate-N` (matrix) | yes, one gate | **none** (`permissions: {}`) | `repomarshal ci gate --gate ID --expect ...`: runs that one gate on a fresh runner and uploads `result.json` as artifact `rm-gate-N`. Step names `run gate` and `upload result` are part of the contract |
+| `rm-gate-N` (matrix) | yes, one gate | **none** (`permissions: {}`) | `repomarshal ci gate --gate ID --expect ...`: runs that one gate on a fresh runner and uploads `result.json` as artifact `rm-gate-N`. Steps `run gate` (fails exactly on FAIL), `gate passed` (`repomarshal ci passed`, succeeds exactly on PASS) and `upload result` are the contract |
 | `dogfood` | no | the above plus `actions: read` | `repomarshal ci verdict --expect ... --results DIR`: re-plans, re-reads the waivers, runs the native checks itself, binds each gate result and folds the verdict |
 
 A gate result counts only when it binds:
@@ -213,13 +213,14 @@ A gate result counts only when it binds:
 - the checkout is the PR head SHA, or a merge commit whose second parent is the PR head SHA;
 - the result file names the same gate, plan hash, HEAD and tree, and the gate did not change the
   tree;
-- GitHub's record of the `rm-gate-N` job agrees, read through the Actions API: step `run gate`
-  succeeded exactly when the file says PASS, and step `upload result` succeeded.
+- GitHub's record of the `rm-gate-N` job, read through the Actions API, decides the status:
+  `run gate` failed means FAIL; `gate passed` succeeded means PASS; anything else is UNKNOWN. The
+  file must agree, and `upload result` must have succeeded, for its details to be used.
 
-Otherwise the result is UNKNOWN. The last check exists because PR code can read the runner's
-artifact token, so a gate job could upload a forged file under another gate's name. It cannot
-change another job's step conclusions, so a forgery can at worst turn a real FAIL into UNKNOWN,
-never into PASS. A gate's report about itself remains only as good as the PR's code, as in any
+A PASS needs all of these. A FAIL recorded by GitHub stays FAIL even without a usable file;
+anything else is UNKNOWN. PR code can read the runner's artifact token, so a gate job could
+upload a forged file under another gate's name. It cannot change another job's step
+conclusions, so a forgery can never create a PASS, nor turn a real FAIL into a waivable UNKNOWN. A gate's report about itself remains only as good as the PR's code, as in any
 CI.
 
 Notes:

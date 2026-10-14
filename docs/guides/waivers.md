@@ -63,8 +63,12 @@ The waiver is genuine when:
   field, rejects the waiver;
 - that account is a CODEOWNER for the target, or has `admin` or `maintain` permission on the
   repository (a failed permission lookup counts as no permission);
+- the label is on the PR right now (label names compare without regard to case);
 - the same account wrote a PR comment with a `repomarshal-waive <target>: <reason>` line and a
-  non-empty reason. No reason, no waiver.
+  non-empty reason. No reason, no waiver. The line must be prose: inside a code block, an
+  indented block, a block quote or an HTML comment it does not count. The comment must not
+  have been edited after it was posted (an edit can come from an app acting as you); post a
+  new comment instead.
 
 **Reviews do not grant waivers (v0.4).** Earlier versions also accepted an approving CODEOWNER
 review with a `repomarshal-waive <target>: <reason>` line. No GitHub API says whether a review was
