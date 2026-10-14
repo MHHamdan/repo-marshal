@@ -449,3 +449,25 @@ described in the threat model's v0.6 section: changes to coverage-deciding files
 workspace list must agree, and the pnpm YAML reader is strict. A re-run of all 27 cases gave the
 same numbers: precision 0.727 frozen and 0.848 adjusted, recall 1.000, and 3/27 cases with an
 unnecessary expensive gate.
+
+## 11. After the v0.7 Poetry fix
+
+Poetry keeps the interpreter constraint (`python = ">=3.9.0"`) inside
+`[tool.poetry.dependencies]`, so rich `285d9e9` ("drop 3.8"), which bumped only that line, raised
+`dependency.changed` and selected `dep_audit` and the secrets baseline. The `python` entry is now
+left out of the dependency comparison. It is still part of the build-config comparison, so the
+change still raises `build.config_changed`, like a `requires-python` edit. Fixture:
+`tests/fixtures/field/rich-makefile/change-python-floor` (plus the control `change-dependency`).
+
+Re-run of the same 27 cases (2026-10-14, frozen `EXPECTED`):
+
+| Metric | v0.6 (§10) | v0.7 |
+|---|---|---|
+| Precision, frozen | 0.727 (72/99) | **0.742** (72/97) |
+| Precision, rule-adjusted | 0.848 | **0.866** (84/97) |
+| Recall | 1.000 | 1.000 |
+| Cases with an unnecessary expensive gate | 3/27 | **2/27** |
+| `plan` median latency | 0.252 s | 0.235 s |
+
+rich `285d9e9` now selects docs-links, format, typecheck and unit. Its one remaining frozen false
+positive is `root:format`, a gate the original judgment never saw.

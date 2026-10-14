@@ -4,41 +4,27 @@ _Last updated: 2026-10-14_
 
 ## Current phase
 
-**v0.6 (adoption) is in progress** on branch `claude/v0.6`.
+**v0.7 is in progress** on branch `claude/v0.7`, from `origin/main` at 3986cdc. PRs #3, #4 and
+#5 (v0.4–v0.6) are merged. Scope is deliberately small:
 
-- **Branch base.** The owner reported v0.5 as merged, but on 2026-10-14 GitHub showed PRs #3
-  (v0.4) and #4 (v0.5) still open, and `main` at b7efa16 (v0.3). So `claude/v0.6` is stacked on
-  `claude/v0.5`. Merge order: #3, #4, then the v0.6 PR.
-
-v0.6 scope (from the owner), all done:
-1. **Release.** Version 0.1.0 and `.github/workflows/release.yml` (trusted publishing, verified
-   signed tag, allowed tagger, default-branch commit, pinned build). Setup:
-   `docs/guides/release.md`. The PyPI name `repomarshal` was unregistered on 2026-10-14.
-2. **Precision** (precision agent, merged). Field precision went from 0.661 to 0.727 against the
-   frozen judgment, and from 0.771 to 0.848 adjusted. Recall stayed at 1.000, and cases with an
-   unneeded expensive gate went from 6 to 3.
-3. **Real demo.** Three recorded Claude Code runs on python-humanize: honest PASS, tamper
-   blocked then PASS, and refusal stopped as UNVERIFIED (`docs/demo/claude-code-humanize.md`).
-4. **Quickstart.** README section, measured with `scripts/quickstart-check.sh` in fresh
-   `python:3.12` containers: 12.6 s and 11.9 s to the first verdict. It found and fixed the
-   `__pycache__` tree-digest bug.
-5. **Fresh fail-open review** (`tests/review_v06/`). It found 9 root causes (14 tests), all
-   fixed.
+1. **Poetry false positive: done.** The `python` entry of `[tool.poetry.dependencies]` no longer
+   raises `dependency.changed`; it still counts as a build-config edit. Fixture
+   `rich-makefile/change-python-floor`, plus the control `change-dependency`.
+2. **27-commit re-run** (`docs/evaluation.md` §11):
+   - precision 0.727 → 0.742 frozen, 0.848 → 0.866 adjusted;
+   - recall stays 1.000;
+   - cases with an unneeded expensive gate: 3 → 2 of 27.
+3. **Live waiver test.** Open the v0.7 PR. The owner adds the waiver label and comment named in
+   the PR report, to test author waivers with main's v0.6 judge. Two judges read the waiver:
+   the advisory `dogfood` job and the trusted `repomarshal-verdict` workflow.
 
 ## Next step
 
-1. PR #5 (`claude/v0.6` → `main`) is open, stacked on #3 and #4. CI at `964a123`:
-   - test 3.11/3.12/3.13, lint, mcp, rm-plan and commit-identity: green;
-   - advisory dogfood: UNKNOWN (exit 2), from main's v0.3 judge (definition changes;
-     integration and dep_audit unavailable).
-
-   The first run, at `b0caea9`, was FAIL: the secrets baseline correctly flagged two
-   secret-shaped test strings, fixed in `964a123`.
-2. The owner merges #3, #4 and #5.
-3. The owner does the PyPI pending-publisher setup, the `pypi` environment and
-   `RELEASE_TAGGER_EMAILS`, then tags `v0.1.0` (`docs/guides/release.md`).
-4. After the release, re-run `scripts/quickstart-check.sh` with its default spec
-   (`repomarshal` from PyPI).
+1. Open the v0.7 PR and predict its open gates with main's judge.
+2. Give the owner the exact comment and labels.
+3. Watch the re-runs after the label, and record the result (advisory dogfood, and the
+   `repomarshal/verdict` status) here.
+4. Then ship 0.1.0 (`docs/guides/release.md`).
 
 ## Upstream repos inspected
 
