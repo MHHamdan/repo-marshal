@@ -1,0 +1,186 @@
+{
+ "config": {
+  "argv": [
+   "/opt/node22/bin/node",
+   "/work/project/node_modules/.bin/playwright",
+   "test",
+   "--reporter=json",
+   "--output=/work/out/out-fail"
+  ],
+  "configFile": "/work/project/playwright.config.js",
+  "rootDir": "/work/project/tests",
+  "failOnFlakyTests": false,
+  "forbidOnly": false,
+  "fullyParallel": false,
+  "globalSetup": null,
+  "globalTeardown": null,
+  "globalTimeout": 0,
+  "grep": {},
+  "grepInvert": null,
+  "maxFailures": 0,
+  "metadata": {
+   "actualWorkers": 1
+  },
+  "preserveOutput": "always",
+  "projects": [
+   {
+    "outputDir": "/work/pwfix/out-fail",
+    "repeatEach": 1,
+    "retries": 0,
+    "metadata": {
+     "actualWorkers": 1
+    },
+    "id": "",
+    "name": "",
+    "testDir": "/work/project/tests",
+    "testIgnore": [],
+    "testMatch": [
+     "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+    ],
+    "timeout": 30000
+   }
+  ],
+  "quiet": false,
+  "reporter": [
+   [
+    "json"
+   ]
+  ],
+  "reportSlowTests": {
+   "max": 5,
+   "threshold": 300000
+  },
+  "shard": null,
+  "tags": [],
+  "updateSnapshots": "missing",
+  "updateSourceMethod": "patch",
+  "version": "1.63.0",
+  "workers": 1,
+  "webServer": null
+ },
+ "suites": [
+  {
+   "title": "fail.spec.js",
+   "file": "fail.spec.js",
+   "column": 0,
+   "line": 0,
+   "specs": [
+    {
+     "title": "heading is wrong",
+     "ok": false,
+     "tags": [],
+     "tests": [
+      {
+       "timeout": 30000,
+       "annotations": [],
+       "expectedStatus": "passed",
+       "projectId": "",
+       "projectName": "",
+       "results": [
+        {
+         "workerIndex": 0,
+         "parallelIndex": 0,
+         "status": "failed",
+         "duration": 661,
+         "error": {
+          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  locator('#t')\nExpected: \u001b[32m\"Goodbye\"\u001b[39m\nReceived: \u001b[31m\"Hello\"\u001b[39m\nTimeout:  500ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" locator('#t') with timeout 500ms\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    6 × locator resolved to <h1 id=\"t\">Hello</h1>\u001b[22m\n\u001b[2m      - unexpected value \"Hello\"\u001b[22m\n",
+          "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  locator('#t')\nExpected: \u001b[32m\"Goodbye\"\u001b[39m\nReceived: \u001b[31m\"Hello\"\u001b[39m\nTimeout:  500ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" locator('#t') with timeout 500ms\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    6 × locator resolved to <h1 id=\"t\">Hello</h1>\u001b[22m\n\u001b[2m      - unexpected value \"Hello\"\u001b[22m\n\n    at /work/project/tests/fail.spec.js:4:36",
+          "location": {
+           "file": "/work/project/tests/fail.spec.js",
+           "column": 36,
+           "line": 4
+          },
+          "snippet": "\u001b[0m \u001b[90m 2 |\u001b[39m test(\u001b[32m'heading is wrong'\u001b[39m\u001b[33m,\u001b[39m \u001b[36masync\u001b[39m ({ page }) \u001b[33m=>\u001b[39m {\n \u001b[90m 3 |\u001b[39m   \u001b[36mawait\u001b[39m page\u001b[33m.\u001b[39msetContent(\u001b[32m'<h1 id=\"t\">Hello</h1>'\u001b[39m)\u001b[33m;\u001b[39m\n\u001b[31m\u001b[1m>\u001b[22m\u001b[39m\u001b[90m 4 |\u001b[39m   \u001b[36mawait\u001b[39m expect(page\u001b[33m.\u001b[39mlocator(\u001b[32m'#t'\u001b[39m))\u001b[33m.\u001b[39mtoHaveText(\u001b[32m'Goodbye'\u001b[39m\u001b[33m,\u001b[39m { timeout\u001b[33m:\u001b[39m \u001b[35m500\u001b[39m })\u001b[33m;\u001b[39m\n \u001b[90m   |\u001b[39m                                    \u001b[31m\u001b[1m^\u001b[22m\u001b[39m\n \u001b[90m 5 |\u001b[39m })\u001b[33m;\u001b[39m\n \u001b[90m 6 |\u001b[39m\u001b[0m"
+         },
+         "errors": [
+          {
+           "location": {
+            "file": "/work/project/tests/fail.spec.js",
+            "column": 36,
+            "line": 4
+           },
+           "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator:  locator('#t')\nExpected: \u001b[32m\"Goodbye\"\u001b[39m\nReceived: \u001b[31m\"Hello\"\u001b[39m\nTimeout:  500ms\n\nCall log:\n\u001b[2m  - Expect \"toHaveText\" locator('#t') with timeout 500ms\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    6 × locator resolved to <h1 id=\"t\">Hello</h1>\u001b[22m\n\u001b[2m      - unexpected value \"Hello\"\u001b[22m\n\n\n  2 | test('heading is wrong', async ({ page }) => {\n  3 |   await page.setContent('<h1 id=\"t\">Hello</h1>');\n> 4 |   await expect(page.locator('#t')).toHaveText('Goodbye', { timeout: 500 });\n    |                                    ^\n  5 | });\n  6 |\n    at /work/project/tests/fail.spec.js:4:36"
+          }
+         ],
+         "stdout": [],
+         "stderr": [],
+         "retry": 0,
+         "startTime": "2026-10-13T23:55:24.886Z",
+         "annotations": [],
+         "attachments": [
+          {
+           "name": "error-context",
+           "contentType": "text/markdown",
+           "path": "/work/pwfix/out-fail/fail-heading-is-wrong/error-context.md"
+          }
+         ],
+         "errorLocation": {
+          "file": "/work/project/tests/fail.spec.js",
+          "column": 36,
+          "line": 4
+         }
+        }
+       ],
+       "status": "unexpected"
+      }
+     ],
+     "id": "0d1da9367a3ffd852688-a848c5e901946efbd1a1",
+     "file": "fail.spec.js",
+     "line": 2,
+     "column": 1
+    }
+   ]
+  },
+  {
+   "title": "pass.spec.js",
+   "file": "pass.spec.js",
+   "column": 0,
+   "line": 0,
+   "specs": [
+    {
+     "title": "greeting renders",
+     "ok": true,
+     "tags": [],
+     "tests": [
+      {
+       "timeout": 30000,
+       "annotations": [],
+       "expectedStatus": "passed",
+       "projectId": "",
+       "projectName": "",
+       "results": [
+        {
+         "workerIndex": 1,
+         "parallelIndex": 0,
+         "status": "passed",
+         "duration": 155,
+         "errors": [],
+         "stdout": [],
+         "stderr": [],
+         "retry": 0,
+         "startTime": "2026-10-13T23:55:26.191Z",
+         "annotations": [],
+         "attachments": []
+        }
+       ],
+       "status": "expected"
+      }
+     ],
+     "id": "50c96391f95b71a32a50-5e9fe1944aea95e859b3",
+     "file": "pass.spec.js",
+     "line": 2,
+     "column": 1
+    }
+   ]
+  }
+ ],
+ "errors": [],
+ "stats": {
+  "startTime": "2026-10-13T23:55:24.403Z",
+  "duration": 2217.807,
+  "expected": 1,
+  "skipped": 0,
+  "unexpected": 1,
+  "flaky": 0
+ }
+}
