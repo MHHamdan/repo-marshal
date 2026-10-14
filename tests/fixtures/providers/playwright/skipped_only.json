@@ -1,0 +1,132 @@
+{
+ "config": {
+  "argv": [
+   "/opt/node22/bin/node",
+   "/work/project/node_modules/.bin/playwright",
+   "test",
+   "--reporter=json",
+   "--output=/work/out/out-skipped"
+  ],
+  "configFile": "/work/project/playwright.config.js",
+  "rootDir": "/work/project/tests",
+  "failOnFlakyTests": false,
+  "forbidOnly": false,
+  "fullyParallel": false,
+  "globalSetup": null,
+  "globalTeardown": null,
+  "globalTimeout": 0,
+  "grep": {},
+  "grepInvert": null,
+  "maxFailures": 0,
+  "metadata": {
+   "actualWorkers": 1
+  },
+  "preserveOutput": "always",
+  "projects": [
+   {
+    "outputDir": "/work/pwfix/out-skipped",
+    "repeatEach": 1,
+    "retries": 0,
+    "metadata": {
+     "actualWorkers": 1
+    },
+    "id": "",
+    "name": "",
+    "testDir": "/work/project/tests",
+    "testIgnore": [],
+    "testMatch": [
+     "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+    ],
+    "timeout": 30000
+   }
+  ],
+  "quiet": false,
+  "reporter": [
+   [
+    "json"
+   ]
+  ],
+  "reportSlowTests": {
+   "max": 5,
+   "threshold": 300000
+  },
+  "shard": null,
+  "tags": [],
+  "updateSnapshots": "missing",
+  "updateSourceMethod": "patch",
+  "version": "1.63.0",
+  "workers": 1,
+  "webServer": null
+ },
+ "suites": [
+  {
+   "title": "skip.spec.js",
+   "file": "skip.spec.js",
+   "column": 0,
+   "line": 0,
+   "specs": [
+    {
+     "title": "not yet",
+     "ok": true,
+     "tags": [],
+     "tests": [
+      {
+       "timeout": 30000,
+       "annotations": [
+        {
+         "type": "skip",
+         "location": {
+          "file": "/work/project/tests/skip.spec.js",
+          "line": 2,
+          "column": 6
+         }
+        }
+       ],
+       "expectedStatus": "skipped",
+       "projectId": "",
+       "projectName": "",
+       "results": [
+        {
+         "workerIndex": -1,
+         "parallelIndex": -1,
+         "status": "skipped",
+         "duration": 0,
+         "errors": [],
+         "stdout": [],
+         "stderr": [],
+         "retry": 0,
+         "startTime": "2026-10-13T23:55:30.746Z",
+         "annotations": [
+          {
+           "type": "skip",
+           "location": {
+            "file": "/work/project/tests/skip.spec.js",
+            "line": 2,
+            "column": 6
+           }
+          }
+         ],
+         "attachments": []
+        }
+       ],
+       "status": "skipped"
+      }
+     ],
+     "id": "075a2c2dcb7bcd1d7518-aa7aa5cead62930c2698",
+     "file": "skip.spec.js",
+     "line": 2,
+     "column": 6
+    }
+   ]
+  }
+ ],
+ "errors": [],
+ "stats": {
+  "startTime": "2026-10-13T23:55:30.699Z",
+  "duration": 49.34100000000001,
+  "expected": 0,
+  "skipped": 1,
+  "unexpected": 0,
+  "flaky": 0
+ }
+}
