@@ -5,16 +5,32 @@ tree, so a change cannot redefine the gates that judge it.
 
 v0.1 sources (precedence high -> low per (scope, kind)):
   1. policy.gates                        ([gates.<id>] in repomarshal.toml at BASE)
-  2. package.json "scripts"              lint; typecheck|type-check|tsc;
-                                         format:check|prettier:check;
+  2. package.json "scripts"              lint|lint:check|test:lint;
+                                         typecheck|type-check|tsc|test:types|test:typecheck;
+                                         format:check|prettier:check|test:format;
                                          test|test:unit -> unit; test:integration; test:e2e|e2e ->
-                                         runtime; test:a11y|a11y. argv = [pm, "run", <script>], pm
-                                         from lockfile (pnpm-lock.yaml -> pnpm, yarn.lock -> yarn,
-                                         bun.lock/bun.lockb -> bun, else npm). Ignore npm's
-                                         placeholder test script ("no test specified").
+                                         runtime; test:a11y|a11y. argv = [pm, "run", <script>].
+                                         Ignore npm's placeholder test script ("no test
+                                         specified"). Gates must never mutate the tree: the first
+                                         candidate (in that order) whose body and pre/post hooks
+                                         carry no mutating flag (MUTATING_FLAGS: --write, --fix,
+                                         -w, ...) wins; only when every candidate of a kind
+                                         mutates is the first one used (the run will then most
+                                         likely end UNKNOWN, tree modified, which is honest), and
+                                         its source says "(mutating; no check variant)".
+                                         pm: the "packageManager" field ("pnpm@9.1.0" -> pnpm) of
+                                         the scope's package.json, else of the root package.json
+                                         (the workspace root); else the lockfile in the scope,
+                                         else at the root (pnpm-lock.yaml -> pnpm, yarn.lock ->
+                                         yarn, bun.lock/bun.lockb -> bun, package-lock.json /
+                                         npm-shrinkwrap.json -> npm); else npm.
      pyproject.toml / ruff.toml / mypy.ini / pytest.toml / pytest.ini / setup.cfg:
-                                         [tool.ruff] or ruff.toml -> lint ["ruff","check","."];
-                                         [tool.mypy] or mypy.ini -> typecheck ["mypy","."];
+                                         [tool.ruff] or ruff.toml -> lint
+                                         ["ruff","check","--no-fix","."] (never apply a
+                                         configured `fix = true`);
+                                         [tool.mypy] or mypy.ini -> typecheck ["mypy","."], or
+                                         ["mypy"] when the config sets files, packages or
+                                         modules (a path argument would override them);
                                          [tool.pyright] -> typecheck ["pyright"];
                                          pytest.toml, .pytest.toml, pytest.ini,
                                          .pytest.ini, [tool.pytest.ini_options],
@@ -26,27 +42,43 @@ v0.1 sources (precedence high -> low per (scope, kind)):
                                          "--ignore=tests/integration" and an
                                          integration gate ["python","-m","pytest","-q",
                                          "tests/integration"].
+     Makefile (architecture §3.2)        targets format-check|fmt-check -> format, lint|check ->
+                                         lint, typecheck, test -> unit; argv ["make", <target>]
+                                         (same non-mutating preference as scripts). Within
+                                         precedence 2 the order is package.json, python
+                                         configs, Makefile.
   3. native.native_gates()               always appended.
-Scopes: the repository root and its immediate subdirectories that contain a recognised manifest.
-Gate id "<scope-name>:<kind>" ("root" for the root scope). cwd = scope directory.
+Scopes: the repository root and its immediate subdirectories that contain a recognised manifest,
+plus the workspace packages of the root: package.json "workspaces" (an array, or an object with
+"packages") and pnpm-workspace.yaml (a simple `packages:` list, read line by line). Globs
+("packages/*", "apps/**") expand at BASE to directories holding a package.json; "!" patterns
+exclude. A subdirectory whose only manifests are pytest config files (pytest.ini, pytest.toml,
+...) is not a scope when the root scope already runs pytest: it configures the root's suite
+(e.g. tests/pytest.ini), and a scope of its own would require the suite twice.
+Gate id "<scope-path>:<kind>" ("root" for the root scope, "packages/zod:unit" for a workspace
+package). cwd = scope directory.
 
 Availability (M3): argv[0] resolved with shutil.which(argv[0], path=path_env); "python" resolves
 to sys.executable's basename alternatives ("python3") if "python" is missing. Unresolvable ->
 available=False, unavailable_reason="<argv0> not found on PATH".
 
 Definition change detection (M14): for every gate, compute definition_digest from its BASE
-definition (the script body + pm for package.json; the relevant tool table / file bytes for
-python configs; the [gates.<id>] table for policy gates) and compare with the same definition in
-the WORKING TREE (git.read_worktree). If they differ (changed, removed, or the file was deleted),
-definition_changed=True. Native gates never change.
+definition (the selected script, its body, hooks and pm for package.json; the relevant tool
+table / file bytes for python configs; the Makefile bytes and selected target for make gates; the
+[gates.<id>] table for policy gates) and compare with the same definition in the WORKING TREE
+(git.read_worktree). If they differ (changed, removed, or the file was deleted),
+definition_changed=True. Native gates never change. Non-policy definitions also include the
+winning source of their (scope, kind) in that tree, so a source added or changed in the working
+tree that would win over (or replace) the BASE source is a definition change too.
 
 M14 also covers files the gate's tool reads or executes, compared as "any change" via the change
 set (added, modified, deleted or renamed; both path and old_path count):
   * the tool's definition file set within the gate scope (_is_definition_file below), e.g.
     conftest.py and pytest.toml / pytest.ini for pytest, ruff.toml for ruff, tsconfig*.json /
-    .npmrc for package.json scripts;
+    .npmrc for package.json scripts, Makefile / makefile / GNUmakefile and *.mk for make gates;
   * repository files named by the BASE command: tokens of the package.json script body and its
-    pre/post hooks (shlex), or the argv of a policy gate, resolved relative to the gate cwd.
+    pre/post hooks (shlex), or the argv of a policy gate, resolved relative to the gate cwd; a
+    command that runs `make` also reads the Makefile in its cwd.
 package.json, pyproject.toml and repomarshal.toml stay compared semantically (above), and paths
 under .repomarshal/ or node_modules/ never count. The changed paths are appended to Gate.source
 ("...; definition changed: <paths>").
@@ -60,9 +92,11 @@ from __future__ import annotations
 
 import configparser
 import dataclasses
+import fnmatch
 import json
 import os
 import posixpath
+import re
 import shlex
 import shutil
 import sys
@@ -105,9 +139,9 @@ SCOPE_MANIFESTS = frozenset({"package.json", "Makefile", *PYTHON_MANIFESTS})
 
 # package.json script names per kind, in preference order.
 SCRIPT_KINDS: tuple[tuple[GateKind, tuple[str, ...]], ...] = (
-    (GateKind.FORMAT, ("format:check", "prettier:check")),
-    (GateKind.LINT, ("lint",)),
-    (GateKind.TYPECHECK, ("typecheck", "type-check", "tsc")),
+    (GateKind.FORMAT, ("format:check", "prettier:check", "test:format")),
+    (GateKind.LINT, ("lint", "lint:check", "test:lint")),
+    (GateKind.TYPECHECK, ("typecheck", "type-check", "tsc", "test:types", "test:typecheck")),
     (GateKind.UNIT, ("test", "test:unit")),
     (GateKind.INTEGRATION, ("test:integration",)),
     (GateKind.RUNTIME, ("test:e2e", "e2e")),
@@ -119,7 +153,25 @@ LOCKFILES = (
     ("yarn.lock", "yarn"),
     ("bun.lock", "bun"),
     ("bun.lockb", "bun"),
+    ("package-lock.json", "npm"),
+    ("npm-shrinkwrap.json", "npm"),
 )
+# A word of a command that makes it rewrite files (biome/eslint/prettier/ruff/black-style flags).
+MUTATING_FLAGS = frozenset({"--write", "--fix", "-w", "--apply", "--apply-unsafe"})
+MUTATING_PREFIXES = ("--write=", "--fix=")
+_PM_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# Makefile targets per kind, in preference order (architecture §3.2).
+MAKE_TARGETS: tuple[tuple[GateKind, tuple[str, ...]], ...] = (
+    (GateKind.FORMAT, ("format-check", "fmt-check")),
+    (GateKind.LINT, ("lint", "check")),
+    (GateKind.TYPECHECK, ("typecheck",)),
+    (GateKind.UNIT, ("test",)),
+)
+# GNU make's own lookup order.
+MAKEFILES = ("GNUmakefile", "makefile", "Makefile")
+_MAKE_RULE = re.compile(r"^([A-Za-z0-9_./%-]+(?:[ \t]+[A-Za-z0-9_./%-]+)*)[ \t]*::?(?!=)(.*)$")
+# A subdirectory holding only these is the root suite's configuration, not a scope of its own.
+PYTEST_ONLY_MANIFESTS = frozenset({"pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini"})
 PYTEST = ("python", "-m", "pytest", "-q")
 
 # Gate families: which definition file set (below) applies to a gate.
@@ -128,6 +180,7 @@ RUFF_GATE = "ruff"
 MYPY_GATE = "mypy"
 PYRIGHT_GATE = "pyright"
 SCRIPT_GATE = "script"
+MAKE_GATE = "make"
 POLICY_GATE = "policy"
 
 PYTEST_FILES = frozenset(
@@ -305,15 +358,67 @@ def _chain_definition(chain: tuple[Lookup, ...]) -> Callable[[_Tree, str], Any]:
     return definition
 
 
+def _declared_package_manager(tree: _Tree, scope: str) -> str | None:
+    """The tool named by package.json "packageManager" ("pnpm@9.1.0+sha..." -> "pnpm")."""
+    data = tree.parsed(scope + "package.json", "json")
+    if not isinstance(data, dict):
+        return None
+    field = data.get("packageManager")
+    if not isinstance(field, str):
+        return None
+    name = field.strip().split("@", 1)[0]
+    return name if _PM_NAME.fullmatch(name) else None
+
+
 def _package_manager(tree: _Tree, scope: str) -> str:
-    for name, pm in LOCKFILES:
-        if tree.read(scope + name) is not None:
-            return pm
+    """packageManager (scope, then the workspace root) wins over lockfiles (scope, then root)."""
+    places = (scope, "") if scope else ("",)
+    for place in places:
+        declared = _declared_package_manager(tree, place)
+        if declared:
+            return declared
+    for place in places:
+        for name, pm in LOCKFILES:
+            if tree.read(place + name) is not None:
+                return pm
     return "npm"
 
 
-def _script_definition(script: str) -> Callable[[_Tree, str], Any]:
-    """What `<pm> run <script>` executes: the script body, its pre/post hooks and the pm."""
+def _mutates(commands: tuple[Any, ...]) -> bool:
+    """Whether any of the shell commands carries a flag that rewrites files."""
+    for command in commands:
+        if not isinstance(command, str):
+            continue
+        for word in _shell_words(command):
+            if word in MUTATING_FLAGS or word.startswith(MUTATING_PREFIXES):
+                return True
+    return False
+
+
+def _pick(names: tuple[str, ...], bodies: Callable[[str], tuple[Any, ...] | None]) -> str | None:
+    """The first defined name whose commands do not mutate; else the first defined name (a gate
+    whose only form mutates is still a gate, see the module doc). None if no name is defined."""
+    defined = [n for n in names if bodies(n) is not None]
+    for name in defined:
+        if not _mutates(bodies(name) or ()):
+            return name
+    return defined[0] if defined else None
+
+
+def _script_bodies(scripts: dict) -> Callable[[str], tuple[Any, ...] | None]:
+    def bodies(name: str) -> tuple[Any, ...] | None:
+        body = scripts.get(name)
+        if not (isinstance(body, str) and body.strip() and NPM_PLACEHOLDER not in body):
+            return None
+        return (body, scripts.get("pre" + name), scripts.get("post" + name))
+
+    return bodies
+
+
+def _script_definition(kind: GateKind, names: tuple[str, ...]) -> Callable[[_Tree, str], Any]:
+    """What `<pm> run <script>` executes: the script the kind selects in this tree, its body, its
+    pre/post hooks and the pm. A different selection (e.g. a check variant added or a mutating
+    flag dropped) is a definition change."""
 
     def definition(tree: _Tree, scope: str) -> Any:
         data = tree.parsed(scope + "package.json", "json")
@@ -322,12 +427,68 @@ def _script_definition(script: str) -> Callable[[_Tree, str], Any]:
         scripts = data.get("scripts") if data is not _MALFORMED else None
         if not isinstance(scripts, dict):
             return {"package.json": "malformed or no scripts"}
+        script = _pick(names, _script_bodies(scripts))
+        if script is None:
+            return {"kind": kind.value, "script": None}
         return {
             "pm": _package_manager(tree, scope),
+            "name": script,
             "script": scripts.get(script),
             "pre": scripts.get("pre" + script),
             "post": scripts.get("post" + script),
         }
+
+    return definition
+
+
+def _makefile(tree: _Tree, scope: str) -> tuple[str, bytes] | None:
+    """The makefile GNU make would read in the scope, with its BASE bytes."""
+    for name in MAKEFILES:
+        raw = tree.read(scope + name)
+        if raw is not None:
+            return scope + name, raw
+    return None
+
+
+def _make_rules(text: str) -> dict[str, list[str]]:
+    """Explicit targets of a makefile and their recipe lines (tab-indented or after `;`)."""
+    rules: dict[str, list[str]] = {}
+    current: list[list[str]] = []
+    for line in text.splitlines():
+        if line.startswith("\t"):
+            for recipe in current:
+                recipe.append(line.strip())
+            continue
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        current = []
+        m = _MAKE_RULE.match(line)
+        if m is None:
+            continue
+        inline = m.group(2).split(";", 1)
+        for target in m.group(1).split():
+            recipe = rules.setdefault(target, [])
+            if len(inline) == 2 and inline[1].strip():
+                recipe.append(inline[1].strip())
+            current.append(recipe)
+    return rules
+
+
+def _make_definition(names: tuple[str, ...]) -> Callable[[_Tree, str], Any]:
+    """The whole makefile (recipes may use any variable or prerequisite) and the target the kind
+    selects in this tree."""
+
+    def definition(tree: _Tree, scope: str) -> Any:
+        found = _makefile(tree, scope)
+        if found is None:
+            return {"makefile": "missing"}
+        path, raw = found
+        try:
+            rules = _make_rules(raw.decode("utf-8"))
+        except UnicodeDecodeError:
+            return {"file": path, "malformed": True}
+        target = _pick(names, lambda n: tuple(rules[n]) if n in rules else None)
+        return {"file": path, "sha256": sha256_bytes(raw), "target": target}
 
     return definition
 
@@ -407,19 +568,56 @@ def _package_json_gates(tree: _Tree, scope: str) -> list[_Candidate]:
     if not isinstance(scripts, dict):
         return []
     pm = _package_manager(tree, scope)
+    bodies_of = _script_bodies(scripts)
     out = []
     for kind, names in SCRIPT_KINDS:
-        for name in names:
-            body = scripts.get(name)
-            if isinstance(body, str) and body.strip() and NPM_PLACEHOLDER not in body:
-                source = f"{scope}package.json#scripts.{name}"
-                bodies = (body, scripts.get("pre" + name), scripts.get("post" + name))
-                words = tuple(w for b in bodies if isinstance(b, str) for w in _shell_words(b))
-                definition = _script_definition(name)
-                argv = (pm, "run", name)
-                out.append(_make(scope, kind, argv, source, definition, SCRIPT_GATE, words))
-                break
+        name = _pick(names, bodies_of)
+        if name is None:
+            continue
+        bodies = bodies_of(name) or ()
+        source = f"{scope}package.json#scripts.{name}"
+        if _mutates(bodies):
+            source += " (mutating; no check variant)"
+        words = tuple(w for b in bodies if isinstance(b, str) for w in _shell_words(b))
+        definition = _script_definition(kind, names)
+        argv = (pm, "run", name)
+        out.append(_make(scope, kind, argv, source, definition, SCRIPT_GATE, words))
     return out
+
+
+def _makefile_gates(tree: _Tree, scope: str) -> list[_Candidate]:
+    found = _makefile(tree, scope)
+    if found is None:
+        return []
+    path, raw = found
+    try:
+        rules = _make_rules(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        return []
+    out = []
+    for kind, names in MAKE_TARGETS:
+        target = _pick(names, lambda n: tuple(rules[n]) if n in rules else None)
+        if target is None:
+            continue
+        source = f"{path}#{target}"
+        if _mutates(tuple(rules[target])):
+            source += " (mutating; no check variant)"
+        argv = ("make", target)
+        out.append(_make(scope, kind, argv, source, _make_definition(names), MAKE_GATE, argv))
+    return out
+
+
+def _mypy_argv(tree: _Tree, found: _Found) -> tuple[str, ...]:
+    """`mypy .` overrides configured files/packages/modules; pass no path when they are set."""
+    definition = found.definition
+    if isinstance(definition, dict) and "table" in definition:
+        table = definition["table"]
+    else:
+        sections = tree.parsed(found.source, "ini")
+        table = sections.get("mypy") if isinstance(sections, dict) else None
+    if isinstance(table, dict) and any(table.get(k) for k in ("files", "packages", "modules")):
+        return ("mypy",)
+    return ("mypy", ".")
 
 
 def _python_gates(tree: _Tree, scope: str, files: tuple[str, ...]) -> list[_Candidate]:
@@ -428,7 +626,8 @@ def _python_gates(tree: _Tree, scope: str, files: tuple[str, ...]) -> list[_Cand
     out = []
     ruff = _resolve(RUFF_CHAIN, tree, scope, at_base=True)
     if ruff:
-        argv = ("ruff", "check", ".")
+        # --no-fix: a configured `fix = true` would rewrite the tree (gates never mutate it).
+        argv = ("ruff", "check", "--no-fix", ".")
         definition = _chain_definition(RUFF_CHAIN)
         out.append(_make(scope, GateKind.LINT, argv, ruff.source, definition, RUFF_GATE))
     typecheckers = (
@@ -438,6 +637,8 @@ def _python_gates(tree: _Tree, scope: str, files: tuple[str, ...]) -> list[_Cand
     for chain, argv, family in typecheckers:
         found = _resolve(chain, tree, scope, at_base=True)
         if found:
+            if family == MYPY_GATE:
+                argv = _mypy_argv(tree, found)
             definition = _chain_definition(chain)
             out.append(_make(scope, GateKind.TYPECHECK, argv, found.source, definition, family))
             break
@@ -465,14 +666,148 @@ def _python_gates(tree: _Tree, scope: str, files: tuple[str, ...]) -> list[_Cand
     return out
 
 
-def detect_scopes(files: tuple[str, ...]) -> tuple[str, ...]:
-    """The root ("") and immediate subdirectories ("dir/") that hold a recognised manifest."""
-    scopes = set()
+def _scope_candidates(tree: _Tree, scope: str, files: tuple[str, ...]) -> list[_Candidate]:
+    """The winning candidate per kind of one scope, in source precedence order."""
+    out: list[_Candidate] = []
+    seen: set[GateKind] = set()
+    sources = (
+        _package_json_gates(tree, scope)
+        + _python_gates(tree, scope, files)
+        + _makefile_gates(tree, scope)
+    )
+    for cand in sources:
+        if cand.gate.kind not in seen:
+            seen.add(cand.gate.kind)
+            out.append(cand)
+    return out
+
+
+def _winner_source(tree: _Tree, scope: str, kind: GateKind, files: tuple[str, ...]) -> str | None:
+    """The source that would define (scope, kind) if the inventory were read from `tree`."""
+    key = ("winners", scope)
+    if key not in tree._parsed:
+        cands = _scope_candidates(tree, scope, files)
+        tree._parsed[key] = {c.gate.kind: c.gate.source for c in cands}
+    return tree._parsed[key].get(kind)
+
+
+def _with_winner(cand: _Candidate, files: tuple[str, ...]) -> _Candidate:
+    """M14: the definition also names the winning source of the gate's (scope, kind), so a source
+    added or changed in the working tree that takes over the gate is a definition change."""
+    own, kind = cand.definition, cand.gate.kind
+
+    def definition(tree: _Tree, scope: str) -> Any:
+        return {"definition": own(tree, scope), "source": _winner_source(tree, scope, kind, files)}
+
+    return dataclasses.replace(cand, definition=definition)
+
+
+def detect_scopes(files: tuple[str, ...], tree: _Tree | None = None) -> tuple[str, ...]:
+    """The root ("") and immediate subdirectories ("dir/") that hold a recognised manifest; with
+    the BASE tree also the workspace packages, and without pytest-only subdirectories of a root
+    that runs pytest (see the module doc)."""
+    manifests: dict[str, set[str]] = {}
     for f in files:
         parts = f.split("/")
         if parts[-1] in SCOPE_MANIFESTS and len(parts) <= 2:
-            scopes.add("" if len(parts) == 1 else parts[0] + "/")
+            scope = "" if len(parts) == 1 else parts[0] + "/"
+            manifests.setdefault(scope, set()).add(parts[-1])
+    scopes = set(manifests)
+    if tree is not None:
+        if "" in scopes and any(
+            c.gate.kind is GateKind.UNIT for c in _python_gates(tree, "", files)
+        ):
+            scopes -= {s for s, names in manifests.items() if s and names <= PYTEST_ONLY_MANIFESTS}
+        scopes |= set(_workspace_scopes(tree, files))
     return tuple(sorted(scopes))
+
+
+def _workspace_globs(tree: _Tree) -> list[str]:
+    """Workspace package globs of the repository root (package.json, pnpm-workspace.yaml)."""
+    globs: list[str] = []
+    data = tree.parsed("package.json", "json")
+    if isinstance(data, dict):
+        ws = data.get("workspaces")
+        if isinstance(ws, dict):
+            ws = ws.get("packages")
+        if isinstance(ws, list):
+            globs += [g for g in ws if isinstance(g, str)]
+    raw = tree.read("pnpm-workspace.yaml")
+    if raw is not None:
+        globs += _pnpm_workspace_packages(raw.decode("utf-8", errors="replace"))
+    return globs
+
+
+def _yaml_scalar(text: str) -> str:
+    text = text.split(" #", 1)[0].strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+        return text[1:-1]
+    return text
+
+
+def _pnpm_workspace_packages(text: str) -> list[str]:
+    """The `packages:` list of pnpm-workspace.yaml: block items (`  - "pkgs/*"`) or a flow list
+    on the same line (`packages: [a, b]`). No YAML dependency; anything else is ignored."""
+    out: list[str] = []
+    in_packages = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not line[0].isspace() and not stripped.startswith("-"):
+            key, _, rest = stripped.partition(":")
+            in_packages = key.strip() == "packages"
+            rest = rest.split(" #", 1)[0].strip()
+            if in_packages and rest.startswith("[") and rest.endswith("]"):
+                out += [_yaml_scalar(i) for i in rest[1:-1].split(",") if i.strip()]
+                in_packages = False
+            continue
+        if in_packages and stripped.startswith("-"):
+            item = _yaml_scalar(stripped[1:])
+            if item:
+                out.append(item)
+    return out
+
+
+def _glob_match(pattern: list[str], parts: list[str]) -> bool:
+    if not pattern:
+        return not parts
+    if pattern[0] == "**":
+        return any(_glob_match(pattern[1:], parts[i:]) for i in range(len(parts) + 1))
+    return (
+        bool(parts)
+        and fnmatch.fnmatchcase(parts[0], pattern[0])
+        and _glob_match(pattern[1:], parts[1:])
+    )
+
+
+def _workspace_scopes(tree: _Tree, files: tuple[str, ...]) -> list[str]:
+    """Directories (at BASE) holding a package.json that a workspace glob matches."""
+    include, exclude = [], []
+    for glob in _workspace_globs(tree):
+        negated = glob.startswith("!")
+        glob = glob[1:] if negated else glob
+        while glob.startswith("./"):
+            glob = glob[2:]
+        glob = glob.strip("/")
+        if glob.endswith("/package.json"):
+            glob = glob[: -len("/package.json")]
+        if not glob or glob.startswith("../") or glob == "..":
+            continue
+        (exclude if negated else include).append(glob.split("/"))
+    if not include:
+        return []
+    out = []
+    for f in files:
+        directory, _, name = f.rpartition("/")
+        if name != "package.json" or not directory or _never_counts(f):
+            continue
+        parts = directory.split("/")
+        if any(_glob_match(p, parts) for p in include) and not any(
+            _glob_match(p, parts) for p in exclude
+        ):
+            out.append(directory + "/")
+    return out
 
 
 # --------------------------------------------------------------------------- definition files
@@ -518,6 +853,8 @@ def _is_definition_file(family: str, rel: str) -> bool:
         return top and base in MYPY_FILES
     if family == PYRIGHT_GATE:
         return top and base == "pyrightconfig.json"
+    if family == MAKE_GATE:
+        return (top and base in MAKEFILES) or base.endswith(".mk")
     if family == SCRIPT_GATE:
         if base == ".npmrc":
             return top
@@ -553,6 +890,12 @@ def _definition_files_changed(cand: _Candidate, changed: frozenset[str]) -> list
     if cand.family == SCRIPT_GATE and ".npmrc" in changed:
         hits.add(".npmrc")  # the repository root .npmrc applies to every package
     words = cand.words if cand.family != POLICY_GATE else gate.argv
+    if cand.family != MAKE_GATE and "make" in words:
+        # The command runs make, which reads the makefile of its cwd.
+        for name in MAKEFILES:
+            path = posixpath.join(gate.cwd, name) if gate.cwd else name
+            if path in changed:
+                hits.add(path)
     for word in words:
         candidates = [word]
         if "=" in word:
@@ -616,17 +959,17 @@ def build_inventory(
     base_tree = _Tree(repo, base, worktree=False)
     work_tree = _Tree(repo, base, worktree=True)
     files = git.list_files_at(repo, base)
-    scopes = detect_scopes(files)
+    scopes = detect_scopes(files, base_tree)
     changed_paths = _changed_paths(change)
 
     candidates = [_Candidate(g, _policy_gate_definition(g.id)) for g in policy.gates]
     taken = {(g.scope, g.kind) for g in policy.gates}
     for scope in scopes:
-        for cand in _package_json_gates(base_tree, scope) + _python_gates(base_tree, scope, files):
+        for cand in _scope_candidates(base_tree, scope, files):
             key = (cand.gate.scope, cand.gate.kind)
             if key not in taken:
                 taken.add(key)
-                candidates.append(cand)
+                candidates.append(_with_winner(cand, files))
 
     gates: list[Gate] = []
     for cand in candidates:

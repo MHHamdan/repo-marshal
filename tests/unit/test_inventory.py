@@ -36,7 +36,7 @@ strict = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 """
-ALL_TOOLS = ("npm", "pnpm", "yarn", "ruff", "mypy", "pyright", "python", "bandit")
+ALL_TOOLS = ("npm", "pnpm", "yarn", "ruff", "mypy", "pyright", "python", "bandit", "make")
 
 
 def _package_json(scripts: dict, **extra) -> str:
@@ -100,7 +100,7 @@ def test_webapp_scenario_inventory(tmp_path, bin_dir):
         (
             "backend:lint",
             GateKind.LINT,
-            ("ruff", "check", "."),
+            ("ruff", "check", "--no-fix", "."),
             "backend/",
             "backend",
             Cost.CHEAP,
@@ -751,3 +751,283 @@ def test_duplicate_gate_ids_raise(tmp_path, bin_dir, monkeypatch):
     monkeypatch.setattr(inventory, "_scope_name", lambda scope: scope[:-1] if scope else "root")
     with pytest.raises(ValueError, match="duplicate gate ids: root:lint"):
         _inv(repo, base, bin_dir)
+
+
+# --------------------------------------------------------------------------- field findings
+
+
+def _argv(inv):
+    return {g.id: g.argv for g in inv.gates if g.provider == "command"}
+
+
+def test_ruff_gate_never_applies_configured_fixes(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("pyproject.toml", "[tool.ruff]\nfix = true\n")
+    repo.write("sub/ruff.toml", "fix = true\n")
+    base = repo.commit()
+    argv = _argv(_inv(repo, base, bin_dir))
+    assert argv["root:lint"] == argv["sub:lint"] == ("ruff", "check", "--no-fix", ".")
+
+
+@pytest.mark.parametrize(
+    ("path", "content", "expected"),
+    [
+        ("pyproject.toml", '[tool.mypy]\nfiles = ["src"]\n', ("mypy",)),
+        ("pyproject.toml", '[tool.mypy]\npackages = ["pkg"]\n', ("mypy",)),
+        ("pyproject.toml", '[tool.mypy]\nmodules = ["m"]\n', ("mypy",)),
+        ("pyproject.toml", "[tool.mypy]\nfiles = []\n", ("mypy", ".")),
+        ("pyproject.toml", "[tool.mypy]\nstrict = true\n", ("mypy", ".")),
+        ("mypy.ini", "[mypy]\nfiles = src, tests\n", ("mypy",)),
+        (".mypy.ini", "[mypy]\nstrict = True\n", ("mypy", ".")),
+        ("setup.cfg", "[mypy]\npackages = pkg\n", ("mypy",)),
+    ],
+)
+def test_mypy_gate_respects_configured_targets(tmp_path, bin_dir, path, content, expected):
+    repo = GitRepo(tmp_path / "r")
+    repo.write(path, content)
+    base = repo.commit()
+    assert _argv(_inv(repo, base, bin_dir))["root:typecheck"] == expected
+
+
+def test_non_mutating_script_variant_wins(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    scripts = {
+        "lint": "biome lint --write .",
+        "lint:check": "biome lint .",
+        "format:check": "biome check .",
+        "typecheck": "tsc --noEmit",
+        "pretypecheck": "eslint --fix .",
+        "test:typecheck": "tsc -p .",
+        "test": "vitest run",
+    }
+    repo.write("package.json", _package_json(scripts))
+    base = repo.commit()
+    g = _by_id(_inv(repo, base, bin_dir))
+    assert g["root:lint"].argv == ("npm", "run", "lint:check")
+    assert g["root:lint"].source == "package.json#scripts.lint:check"
+    assert g["root:typecheck"].argv == ("npm", "run", "test:typecheck")  # pre-hook mutates
+
+
+@pytest.mark.parametrize(
+    "body", ["eslint --fix .", "prettier --write=true .", "biome check --apply .", "x -w"]
+)
+def test_only_mutating_script_is_still_a_gate(tmp_path, bin_dir, body):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("package.json", _package_json({"lint": body}))
+    base = repo.commit()
+    lint = _by_id(_inv(repo, base, bin_dir))["root:lint"]
+    assert lint.argv == ("npm", "run", "lint")
+    assert lint.source == "package.json#scripts.lint (mutating; no check variant)"
+
+
+def test_m14_script_selection_change_is_a_definition_change(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    scripts = {"lint": "biome lint --write .", "test": "vitest"}
+    repo.write("package.json", _package_json(scripts))
+    base = repo.commit()
+    repo.write("package.json", _package_json({**scripts, "lint:check": "true"}))
+    assert _changed(_inv(repo, base, bin_dir)) == ["root:lint"]
+
+
+def test_test_prefixed_scripts_are_inventoried(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    scripts = {
+        "test": 'pnpm run "/^test:.*/"',
+        "test:format": "prettier . --list-different",
+        "test:types": "tsc --noEmit",
+        "test:lint": "eslint .",
+    }
+    repo.write("package.json", _package_json(scripts))
+    repo.write("web/package.json", _package_json({"test:typecheck": "tsc"}))
+    base = repo.commit()
+    argv = _argv(_inv(repo, base, bin_dir))
+    assert argv["root:format"] == ("npm", "run", "test:format")
+    assert argv["root:lint"] == ("npm", "run", "test:lint")
+    assert argv["root:typecheck"] == ("npm", "run", "test:types")
+    assert argv["root:unit"] == ("npm", "run", "test")
+    assert argv["web:typecheck"] == ("npm", "run", "test:typecheck")
+
+
+def test_package_manager_field_selects_the_runner(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("package.json", _package_json({"test": "jest"}, packageManager="yarn@4.1.0"))
+    repo.write("pnpm-lock.yaml", "")
+    repo.write("a/package.json", _package_json({"test": "jest"}))  # inherits the root's field
+    repo.write("b/package.json", _package_json({"test": "jest"}, packageManager="bun@1.1.0"))
+    repo.write("c/package.json", _package_json({"test": "jest"}, packageManager="pnpm@9+sha1.x"))
+    base = repo.commit()
+    argv = _argv(_inv(repo, base, bin_dir))
+    assert argv["root:unit"][0] == argv["a:unit"][0] == "yarn"
+    assert argv["b:unit"][0] == "bun"
+    assert argv["c:unit"][0] == "pnpm"
+
+
+def test_lockfiles_fall_back_to_the_root(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("package.json", _package_json({"test": "jest"}, packageManager="not valid!"))
+    repo.write("pnpm-lock.yaml", "")
+    repo.write("a/package.json", _package_json({"test": "jest"}))
+    repo.write("b/package.json", _package_json({"test": "jest"}))
+    repo.write("b/package-lock.json", "{}\n")
+    base = repo.commit()
+    argv = _argv(_inv(repo, base, bin_dir))
+    assert argv["root:unit"][0] == argv["a:unit"][0] == "pnpm"
+    assert argv["b:unit"][0] == "npm"
+
+
+def test_m14_root_package_manager_change_reaches_sub_scopes(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("package.json", _package_json({}, packageManager="pnpm@9.0.0"))
+    repo.write("a/package.json", _package_json({"test": "jest"}))
+    base = repo.commit()
+    repo.write("package.json", _package_json({}, packageManager="yarn@4.0.0"))
+    assert _changed(_inv(repo, base, bin_dir)) == ["a:unit"]
+
+
+MAKEFILE = """\
+VAR := lint
+.PHONY: lint test
+lint: ; ruff check --fix .
+check:
+\truff check .
+test typecheck: deps
+\tpytest -q
+fmt-check:
+\tblack --check .
+# format-check: not a rule
+"""
+
+
+def test_makefile_targets_are_inventoried(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("Makefile", MAKEFILE)
+    repo.write("svc/Makefile", "format-check:\n\tprettier -w .\nlint:\n\teslint .\n")
+    repo.write("svc/package.json", _package_json({"lint": "eslint ."}))
+    base = repo.commit()
+    g = _by_id(_inv(repo, base, bin_dir))
+    assert {i: g[i].argv for i in g if i.startswith("root:")} == {
+        "root:format": ("make", "fmt-check"),
+        "root:lint": ("make", "check"),  # `lint` applies fixes
+        "root:typecheck": ("make", "typecheck"),
+        "root:unit": ("make", "test"),
+    }
+    assert g["root:format"].source == "Makefile#fmt-check"
+    assert g["root:unit"].cwd == ""
+    assert g["svc:lint"].argv == ("npm", "run", "lint")  # package.json precedes the Makefile
+    assert g["svc:format"].source == "svc/Makefile#format-check (mutating; no check variant)"
+
+
+def test_python_config_precedes_makefile(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("pyproject.toml", '[tool.mypy]\nfiles = ["pkg"]\n[tool.pytest.ini_options]\n')
+    repo.write(
+        "Makefile", "test:\n\tpytest\nformat-check:\n\tblack --check .\ntypecheck:\n\tmypy\n"
+    )
+    base = repo.commit()
+    argv = _argv(_inv(repo, base, bin_dir))
+    assert argv["root:unit"] == ("python", "-m", "pytest", "-q")
+    assert argv["root:typecheck"] == ("mypy",)
+    assert argv["root:format"] == ("make", "format-check")
+
+
+def test_m14_makefile_is_a_definition_file(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("Makefile", "test:\n\tpytest\n")
+    repo.write("rules.mk", "X = 1\n")
+    base = repo.commit()
+    repo.write("Makefile", "test:\n\ttrue\n")
+    inv = _inv_c(repo, base, bin_dir)
+    assert _changed(inv) == ["root:unit"]
+    assert _by_id(inv)["root:unit"].source == "Makefile#test; definition changed: Makefile"
+    repo.git("checkout", "--", "Makefile")
+    repo.write("rules.mk", "X = 2\n")
+    assert _changed(_inv_c(repo, base, bin_dir)) == ["root:unit"]
+    repo.git("checkout", "--", "rules.mk")
+    repo.write("GNUmakefile", "test:\n\ttrue\n")  # make reads it before Makefile
+    assert _changed(_inv_c(repo, base, bin_dir)) == ["root:unit"]
+
+
+def test_m14_source_taking_over_a_gate_is_a_definition_change(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("Makefile", "lint:\n\truff check .\n")
+    base = repo.commit()
+    repo.write("package.json", _package_json({"lint": "true"}))
+    inv = _inv(repo, base, bin_dir)
+    assert _changed(inv) == ["root:lint"]
+    assert _by_id(inv)["root:lint"].argv == ("make", "lint")  # still the BASE definition
+
+
+def test_m14_command_running_make_tracks_the_makefile(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("web/package.json", _package_json({"test": "make test"}))
+    repo.write("web/Makefile", "test:\n\tjest\n")
+    base = repo.commit()
+    repo.write("web/Makefile", "test:\n\ttrue\n")
+    assert _changed(_inv_c(repo, base, bin_dir)) == ["web:unit"]
+
+
+def test_pytest_ini_inside_tests_dir_is_not_a_scope(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("pyproject.toml", "[tool.pytest.ini_options]\ntestpaths = ['tests']\n")
+    repo.write("tests/pytest.ini", "[pytest]\njunit_family=legacy\n")
+    repo.write("tests/test_a.py", "")
+    base = repo.commit()
+    inv = _inv(repo, base, bin_dir)
+    assert inv.scopes == ("",)
+    assert [g.id for g in inv.gates if g.kind is GateKind.UNIT] == ["root:unit"]
+    repo.write("tests/pytest.ini", "[pytest]\naddopts = -k nothing\n")
+    assert _changed(_inv_c(repo, base, bin_dir)) == ["root:unit"]
+
+
+def test_pytest_only_subdirectory_is_a_scope_without_root_pytest(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("pyproject.toml", "[tool.ruff]\n")
+    repo.write("svc/pytest.ini", "[pytest]\n")
+    repo.write("lib/pytest.ini", "[pytest]\n")
+    repo.write("lib/pyproject.toml", "[tool.ruff]\n")
+    base = repo.commit()
+    assert _inv(repo, base, bin_dir).scopes == ("", "lib/", "svc/")
+
+
+@pytest.mark.parametrize(
+    "declare",
+    [
+        lambda r: r.write("package.json", json.dumps({"workspaces": ["packages/*", "apps/**"]})),
+        lambda r: r.write(
+            "package.json", json.dumps({"workspaces": {"packages": ["./packages/*/", "apps/**"]}})
+        ),
+        lambda r: r.write(
+            "pnpm-workspace.yaml",
+            "# workspace\npackages:\n  - 'packages/*'\n  - \"apps/**\"  # nested\n"
+            "catalog:\n  - ignored/*\n",
+        ),
+        lambda r: r.write("pnpm-workspace.yaml", "packages: [packages/*, 'apps/**']\n"),
+    ],
+    ids=["array", "object", "pnpm-block", "pnpm-flow"],
+)
+def test_workspace_packages_are_scopes(tmp_path, bin_dir, declare):
+    repo = GitRepo(tmp_path / "r")
+    declare(repo)
+    repo.write("packages/zod/package.json", _package_json({"test": "vitest"}))
+    repo.write("packages/zod/node_modules/dep/package.json", _package_json({"test": "x"}))
+    repo.write("packages/notes/README.md", "# no package.json\n")
+    repo.write("apps/web/site/package.json", _package_json({"lint": "eslint ."}))
+    repo.write("ignored/x/package.json", _package_json({"test": "x"}))
+    repo.write("pnpm-lock.yaml", "")
+    base = repo.commit()
+    inv = _inv(repo, base, bin_dir)
+    assert set(inv.scopes) >= {"apps/web/site/", "packages/zod/"}
+    assert not {s for s in inv.scopes if "node_modules" in s or s.startswith("ignored/")}
+    g = _by_id(inv)
+    assert g["packages/zod:unit"].argv == ("pnpm", "run", "test")
+    assert g["packages/zod:unit"].cwd == "packages/zod"
+    assert g["apps/web/site:lint"].scope == "apps/web/site/"
+
+
+def test_workspace_negation_and_immediate_subdirectories(tmp_path, bin_dir):
+    repo = GitRepo(tmp_path / "r")
+    repo.write("package.json", json.dumps({"workspaces": ["packages/*", "!packages/skip", "web"]}))
+    for d in ("packages/a", "packages/skip", "web", "tools"):
+        repo.write(f"{d}/package.json", _package_json({"test": "jest"}))
+    base = repo.commit()
+    assert _inv(repo, base, bin_dir).scopes == ("", "packages/a/", "tools/", "web/")
