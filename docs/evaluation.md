@@ -443,3 +443,9 @@ larger than the 2,000-line diff cap; a truncated lockfile diff still requires th
 
 Zod's gates are still UNAVAILABLE in these runs because `nub` is not on this machine's PATH; that
 does not change which gates are selected.
+
+**Note (after the v0.6 fail-open review).** The coverage rule was hardened afterwards, as
+described in the threat model's v0.6 section: changes to coverage-deciding files void it, every
+workspace list must agree, and the pnpm YAML reader is strict. A re-run of all 27 cases gave the
+same numbers: precision 0.727 frozen and 0.848 adjusted, recall 1.000, and 3/27 cases with an
+unnecessary expensive gate.

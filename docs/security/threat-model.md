@@ -204,6 +204,50 @@ that exist in code, or that are scheduled as v0.1 MUST/SHOULD in the roadmap.
 5. **The evidence artifact included PR-controlled files.** Only the judge's own output is
    uploaded.
 
+### v0.6: precision rules, bytecode isolation, release (each with tests in `tests/review_v06/`)
+
+The v0.6 precision fixes remove gates. They are judged by what a dropped gate could hide:
+
+- A workspace package's gate is skipped only when the root gate of the same kind demonstrably
+  runs it (architecture §3.5).
+- A dependency bump no longer requires integration.
+- A lockfile-only update no longer requires the secrets baseline.
+
+The fresh review found 9 ways to abuse these rules and the new release workflow. All are fixed:
+
+1. **Conflicting workspace files** (pnpm reads only `pnpm-workspace.yaml`). A package must now
+   be listed by every workspace file present.
+2. **YAML or JS the line parsers misread** (block scalars, anchors, evaluated arrays, regex
+   literals), and
+3. **unmodelled config that changes what a root run does**: a root `package.json` `"jest"`
+   global option, `project.json` targets under lerna/Nx, `turbo.json`.
+
+   For both: a change to any file that decides coverage now voids it, and both gates stay
+   required. These files are the workspace lists, the root vitest/vite/jest configs,
+   `vitest.workspace.*`, `lerna.json`, `nx.json`, `turbo.json`, any `project.json`, `.npmrc`,
+   and any root `package.json` key other than dependency metadata. `vitest.workspace.*` is also
+   a definition file of the root gate.
+4. **Secrets in a lockfile skipped the secrets gate.** Only `user:pass@` URLs were caught. Now
+   any URL user-info, or anything the native secrets patterns flag, keeps the gate. The
+   exemption also applies only to an existing lockfile being updated, not to a new file named
+   like one.
+5. **A tag named `origin/main` passed the release workflow's default-branch check.** It now
+   uses `refs/remotes/origin/<default>`.
+6. **Any GitHub account's verified signature could release.** The tagger must now be listed in
+   `RELEASE_TAGGER_EMAILS`.
+7. Defence in depth: the publish job uploads exactly this version's sdist and wheel.
+
+**Gate bytecode (v0.6).** Command gates run with `PYTHONPYCACHEPREFIX` set to a fresh private
+directory. Gates no longer write `__pycache__/` into the tree, which made a first run on a
+repository without a `.gitignore` UNKNOWN. A `.pyc` planted in the tree's `__pycache__/` (for
+example an unchecked-hash one) is no longer executed instead of its source. The exception is a
+gate that runs `python -I` or `-E`, because those ignore the variable. This narrows T18.
+
+| # | Remaining threat (v0.6) | L | I | Note |
+|---|---|---|---|---|
+| T38 | Configuration that a root vitest/jest config imports from another file (e.g. `./vitest.shared.ts`) is not tracked for coverage | 1 | 2 | An edit to such a file is not a coverage-voiding change. Keep shared config in the root config file, or expect package gates to be skipped only when the root config itself lists them |
+| T39 | A turbo remote cache replays an earlier result | 1 | 2 | The replay is for identical inputs; turbo's cache keys are outside RepoMarshal |
+
 ## Residual risks that must be stated in the README
 
 1. **A local PASS is advisory.** A same-user agent can, with deliberate effort, defeat any local

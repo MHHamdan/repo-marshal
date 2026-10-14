@@ -71,6 +71,24 @@ threat model priorities.
   them if the PR changed `ci.yml`, and posts the commit status `repomarshal/verdict` (T31). With
   a GitHub App identity the status cannot be forged (T35).
 
+## Done in v0.6 (adoption)
+
+- **Release:** version 0.1.0; `release.yml` publishes to PyPI by trusted publishing, only from a
+  verified signed tag by an allowed tagger, on a default-branch commit, with pinned build tools.
+  Setup is in `docs/guides/release.md`.
+- **Precision:**
+  - a root gate that demonstrably runs a workspace package's checks covers that package's gate;
+  - dependency bumps no longer require integration;
+  - lockfile-only updates no longer require the secrets baseline.
+
+  Field precision rose from 0.661 to 0.727 (adjusted: 0.771 to 0.848), with recall still 1.000
+  (`docs/evaluation.md` §10).
+- **Real demo:** Claude Code on python-humanize, with an honest PASS, a tamper caught, and an
+  UNVERIFIED stop (`docs/demo/`).
+- **Quickstart:** measured at about 12 s from install to first verdict in a fresh container. The
+  quickstart also surfaced a bug, now fixed: gates no longer write `__pycache__/` into the tree
+  (`PYTHONPYCACHEPREFIX`).
+
 ## SHOULD: next, in priority order
 
 1. **Evidence hash chain** (`prev_digest`) and a `status` command that reports STALE.

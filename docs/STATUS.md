@@ -4,46 +4,35 @@ _Last updated: 2026-10-14_
 
 ## Current phase
 
-**v0.5 is in progress** on branch `claude/v0.5`.
+**v0.6 (adoption) is in progress** on branch `claude/v0.6`.
 
-- **Branch base.** The owner reported v0.4 as merged, but on 2026-10-14 GitHub still showed PR #3
-  open and `main` at b7efa16 (v0.3). So `claude/v0.5` is stacked on `claude/v0.4` (3060d63). The
-  v0.5 PR targets `main`, and its diff includes the v0.4 commits until PR #3 merges.
+- **Branch base.** The owner reported v0.5 as merged, but on 2026-10-14 GitHub showed PRs #3
+  (v0.4) and #4 (v0.5) still open, and `main` at b7efa16 (v0.3). So `claude/v0.6` is stacked on
+  `claude/v0.5`. Merge order: #3, #4, then the v0.6 PR.
 
-v0.5 scope (from the owner): close T31 without CODEOWNERS review.
-- **Trusted verdict workflow: done.** `.github/workflows/repomarshal-verdict.yml` is triggered
-  by `workflow_run` of `ci` and always runs from the default branch. It runs
-  `repomarshal ci trusted-verdict`, which:
-  - checks the triggering run through the Actions API (path, event, head SHA, attempt);
-  - finds the single open PR for that head;
-  - refuses the gate records if the PR changed `ci.yml`, unless a human grants the
-    `ci-workflow` waiver;
-  - binds the `rm-gate-N` step records and result files to the PR head SHA;
-  - posts the commit status `repomarshal/verdict` (`statuses: write` is its only write scope).
-- **`ci.yml`: done.** The gate jobs check out the PR head SHA, and the in-workflow `dogfood` job
-  is now "dogfood (advisory)".
-- **Identity: done, with an owner setup step.** Workflow-token statuses can be forged by any
-  workflow on any branch (T35). The workflow therefore posts with a GitHub App token whenever
-  the environment `repomarshal-verdict` holds `REPOMARSHAL_APP_CLIENT_ID` and
-  `REPOMARSHAL_APP_PRIVATE_KEY`. The setup is documented in `docs/guides/ci.md`.
-- **Required check: done.** Exactly `repomarshal/verdict` (source: the App).
-- **Fresh fail-open review (`tests/review_v05/`): done.** It found 5 fail-open paths, all fixed
-  with regression tests. The critical one: a PR into an attacker-pushed base branch was judged
-  by that branch.
+v0.6 scope (from the owner), all done:
+1. **Release.** Version 0.1.0 and `.github/workflows/release.yml` (trusted publishing, verified
+   signed tag, allowed tagger, default-branch commit, pinned build). Setup:
+   `docs/guides/release.md`. The PyPI name `repomarshal` was unregistered on 2026-10-14.
+2. **Precision** (precision agent, merged). Field precision went from 0.661 to 0.727 against the
+   frozen judgment, and from 0.771 to 0.848 adjusted. Recall stayed at 1.000, and cases with an
+   unneeded expensive gate went from 6 to 3.
+3. **Real demo.** Three recorded Claude Code runs on python-humanize: honest PASS, tamper
+   blocked then PASS, and refusal stopped as UNVERIFIED (`docs/demo/claude-code-humanize.md`).
+4. **Quickstart.** README section, measured with `scripts/quickstart-check.sh` in fresh
+   `python:3.12` containers: 12.6 s and 11.9 s to the first verdict. It found and fixed the
+   `__pycache__` tree-digest bug.
+5. **Fresh fail-open review** (`tests/review_v06/`). It found 9 root causes (14 tests), all
+   fixed.
 
 ## Next step
 
-The v0.5 PR (`claude/v0.5` → `main`) is open; it is stacked on PR #3. Next:
-1. The owner merges PR #3 (v0.4), then reviews and merges v0.5.
-2. After v0.5 merges, the owner does the App setup and sets `repomarshal/verdict` as the one
-   required check (`docs/guides/ci.md`).
-3. The first PR after that is the first trusted verdict on GitHub. Check that the
-   `repomarshal-verdict` run posts the status.
-
-Measured for this branch:
-- suite: 1321 passed;
-- local simulation of the advisory dogfood with the v0.4 judge: UNKNOWN on `root:unit` (new
-  conftest) and `integration`, both waivable by the owner once PR #3 is merged.
+1. Open the v0.6 PR and report.
+2. The owner merges #3, #4 and v0.6.
+3. The owner does the PyPI pending-publisher setup, the `pypi` environment and
+   `RELEASE_TAGGER_EMAILS`, then tags `v0.1.0` (`docs/guides/release.md`).
+4. After the release, re-run `scripts/quickstart-check.sh` with its default spec
+   (`repomarshal` from PyPI).
 
 ## Upstream repos inspected
 
