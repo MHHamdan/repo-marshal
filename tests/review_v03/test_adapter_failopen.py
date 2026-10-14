@@ -282,8 +282,8 @@ def test_playwright_gate_does_not_receive_the_ci_token(tmp_path):
 
     env = _clean_env(
         PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
-        GITHUB_TOKEN="ghs_fakeworkflowtoken000000000000000000",  # noqa: S106 - fake
-        ACTIONS_RUNTIME_TOKEN="fake-runtime-token",  # noqa: S106 - fake
+        GITHUB_TOKEN="fake-gh",  # noqa: S106 - fake; short so the secrets baseline ignores it
+        ACTIONS_RUNTIME_TOKEN="fake-rt",  # noqa: S106 - fake
     )
     runner.run_gate(root, g, ChangeSet(None, None, "0" * 40, (), True), env)
     seen = json.loads(log.read_text())
