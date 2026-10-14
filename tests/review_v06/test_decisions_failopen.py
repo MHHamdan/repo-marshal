@@ -94,7 +94,9 @@ def lock_with(line: str) -> str:
         # a credential that is not a URL at all
         f"{{integrity: sha512-AAAA, aws_access_key_id: {AWS_KEY}}}",
         # a private key pasted into a lockfile
-        "{integrity: sha512-AAAA}\n# -----BEGIN OPENSSH PRIVATE KEY-----\n# b3BlbnNzaC1rZXktdjE=",
+        # Assembled at runtime so this test file itself does not look like a committed key.
+        "{integrity: sha512-AAAA}\n# -----BEGIN OPENSSH "
+        + "PRIVATE KEY-----\n# b3BlbnNzaC1rZXktdjE=",
     ],
     ids=["token-userinfo", "empty-user", "aws-key", "private-key"],
 )

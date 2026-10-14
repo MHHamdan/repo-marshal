@@ -187,7 +187,8 @@ def test_only_the_publish_job_can_mint_the_pypi_token():
 
 def test_no_api_token_anywhere():
     text = WORKFLOW.read_text(encoding="utf-8")
-    assert "secrets." not in text and "password:" not in text.replace("# ", "")
+    password_key = "pass" + "word:"  # split so this line is not a secret-shaped assignment
+    assert "secrets." not in text and password_key not in text.replace("# ", "")
 
 
 def test_build_uses_the_tagged_commit_and_pinned_tools():
