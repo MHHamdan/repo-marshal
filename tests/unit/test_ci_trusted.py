@@ -36,12 +36,14 @@ def serve(gh: FakeGitHub, pr: PR, **run_overrides) -> None:
         **run_overrides,
     }
     gh.routes[f"/repos/{REPO}/actions/runs/{RUN_ID}"] = run
+    gh.routes[f"/repos/{REPO}"] = {"full_name": REPO, "default_branch": "main"}
+    gh.routes[f"/repos/{REPO}/actions/workflows/ci.yml/runs"] = {"workflow_runs": [run]}
     pull = {
         "number": 3,
         "state": "open",
         "user": {"login": "MHHamdan", "type": "User"},
         "head": {"sha": head},
-        "base": {"sha": pr.base, "repo": {"full_name": REPO}},
+        "base": {"sha": pr.base, "ref": "main", "repo": {"full_name": REPO}},
     }
     gh.routes[f"/repos/{REPO}/commits/{head}/pulls"] = [pull]
     gh.routes[f"/repos/{REPO}/pulls/3"] = pull
@@ -274,17 +276,21 @@ def _workflow_pr(tmp_path, monkeypatch, permit: bool = True) -> PR:
     return pr
 
 
-def _grant(gh: FakeGitHub, *targets: str, via=None) -> None:
+def _grant(gh: FakeGitHub, *targets: str, via=None, blob: str = "") -> None:
     from tests.unit.test_waivers import comment, label
 
     kw = {} if via is None else {"via": via}
-    lines = "\n".join(f"repomarshal-waive {t}: I reviewed the ci.yml diff" for t in targets)
+    lines = "\n".join(f"repomarshal-waive {t}: I reviewed the ci.yml diff {blob}" for t in targets)
     gh.pr(
         events=[label(t, "MHHamdan", n=i + 1, **kw) for i, t in enumerate(targets)],
         comments=[comment("MHHamdan", lines)],
         repo=REPO,
         number=3,
     )
+
+
+def _blob(pr: PR) -> str:
+    return pr.r.git("rev-parse", f"{pr.pr_head}:{ci.WORKFLOW_PATH}")[:12]
 
 
 def trusted_github(pr: PR, gh: FakeGitHub, results, jobs):
@@ -305,7 +311,7 @@ def test_reviewed_ci_yml_change_binds_with_a_human_waiver(tmp_path, gh, monkeypa
     pr = _workflow_pr(tmp_path, monkeypatch)
     serve(gh, pr)
     # A CI change with code is elevated risk, so integration is required and unavailable here.
-    _grant(gh, ci.WORKFLOW_WAIVER, "integration")
+    _grant(gh, ci.WORKFLOW_WAIVER, "integration", blob=_blob(pr))
     results, jobs = run_gates(pr)
     res = trusted_github(pr, gh, results, jobs)
     assert res.verdict is Verdict.PASS, res.reasons
@@ -341,3 +347,47 @@ def test_ci_yml_change_without_waiver_is_unknown_even_with_other_waivers(tmp_pat
     res = trusted_github(pr, gh, results, jobs)
     assert res.verdict is Verdict.UNKNOWN
     assert all(s == "UNKNOWN" for g, s in statuses(res).items() if not g.startswith("native:"))
+
+
+def test_ci_workflow_waiver_must_name_the_reviewed_file(tmp_path, gh, monkeypatch):
+    """A reason without the current ci.yml blob id (e.g. one written for an earlier version)
+    does not accept the change."""
+    pr = _workflow_pr(tmp_path, monkeypatch)
+    serve(gh, pr)
+    _grant(gh, ci.WORKFLOW_WAIVER, "integration", blob="0123456789ab")
+    results, jobs = run_gates(pr)
+    res = trusted_github(pr, gh, results, jobs)
+    assert res.verdict is Verdict.UNKNOWN
+    assert any(_blob(pr) in r for r in res.reasons), res.reasons  # tells the reviewer the id
+
+
+def test_pr_into_another_branch_is_not_judged(tmp_path, gh):
+    pr = PR(tmp_path)
+    serve(gh, pr)
+    for key in (f"/repos/{REPO}/pulls/3",):
+        gh.routes[key] = {**gh.routes[key], "base": {**gh.routes[key]["base"], "ref": "evil"}}
+    results, jobs = run_gates(pr)
+    res = trusted(pr, gh, results, jobs)
+    assert res.verdict is Verdict.UNKNOWN and res.plan is None
+    assert "default branch" in res.reasons[0]
+
+
+def test_superseded_run_posts_nothing(tmp_path, gh):
+    pr = PR(tmp_path)
+    serve(gh, pr)
+    runs = gh.routes[f"/repos/{REPO}/actions/workflows/ci.yml/runs"]["workflow_runs"]
+    runs.append({**runs[0], "id": int(RUN_ID) + 1})
+    results, jobs = run_gates(pr)
+    res = trusted(pr, gh, results, jobs)
+    assert ci.commit_status(res)[0] == "skip"
+
+
+def test_a_newer_push_run_does_not_supersede(tmp_path, gh):
+    """A ci run for the same commit from another event (e.g. a PR-edited push trigger) must not
+    silence the pull_request run's verdict."""
+    pr = PR(tmp_path)
+    serve(gh, pr)
+    runs = gh.routes[f"/repos/{REPO}/actions/workflows/ci.yml/runs"]["workflow_runs"]
+    runs.append({**runs[0], "id": int(RUN_ID) + 1, "event": "push"})
+    results, jobs = run_gates(pr)
+    assert ci.commit_status(trusted(pr, gh, results, jobs))[0] == "success"

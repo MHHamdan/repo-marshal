@@ -386,7 +386,7 @@ def verdict_step(
     jobs: JobSteps | None = None,
     self_bind: bool = False,
     extra_problems: tuple[str, ...] = (),
-    workflow_changed: bool = False,
+    workflow_blob: str | None = None,
 ) -> DoneResult:
     """Fold the isolated gate results into a verdict, on a runner where no PR code ran.
     `jobs` is for tests; in CI it is read from the Actions API. `self_bind` (the trusted
@@ -410,10 +410,13 @@ def verdict_step(
             for key in ("plan_hash", "head", "tree", "gates")
             if expect.get(key) != mine[key]
         ]
-    extra = {WORKFLOW_WAIVER: (WORKFLOW_PATH,)} if workflow_changed else None
+    extra = {WORKFLOW_WAIVER: (WORKFLOW_PATH,)} if workflow_blob else None
     granted, notes = api.collect_waivers(prep, waivers, env, extra)
-    if workflow_changed:
-        accepted = [w for w in granted if w.target == WORKFLOW_WAIVER]
+    if workflow_blob:
+        # The waiver must name the reviewed ci.yml (its blob id), so a later rewrite of ci.yml
+        # under the same label is not covered (v0.5 review #2).
+        blob = workflow_blob[:12]
+        accepted = [w for w in granted if w.target == WORKFLOW_WAIVER and blob in w.reason]
         if WORKFLOW_WAIVER in prep.inventory:  # a BASE gate of that name: never ambiguous
             accepted = []
         if accepted and p.policy.waivers_permit_pass:
@@ -426,7 +429,9 @@ def verdict_step(
             problems.append(
                 f"the PR changes {WORKFLOW_PATH}, which defines the gate jobs: their records "
                 "cannot be trusted unless a person reviews the change and grants the "
-                f"'{WORKFLOW_WAIVER}' waiver (with BASE waivers_permit_pass)"
+                f"'{WORKFLOW_WAIVER}' waiver naming the reviewed file, e.g. "
+                f"'repomarshal-waive {WORKFLOW_WAIVER}: reviewed ci.yml {blob}' "
+                "(with BASE waivers_permit_pass)"
             )
     jobs_problem = None
     if not problems and jobs is None and mine["gates"]:
@@ -466,6 +471,7 @@ def verdict_step(
 WORKFLOW_PATH = ".github/workflows/ci.yml"  # defines the rm-plan / rm-gate jobs
 # A person's statement "I reviewed this PR's change to ci.yml": the only way such a PR can bind.
 WORKFLOW_WAIVER = "ci-workflow"
+SUPERSEDED = "superseded: a newer ci run for this commit brings its own verdict"
 STATUS_CONTEXT = "repomarshal/verdict"
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
 
@@ -513,6 +519,10 @@ def trusted_verdict(
     gh = waivers_mod._GitHub(api_url, token)
     problems: list[str] = []
     try:
+        meta = gh.get(f"/repos/{repo_name}")
+        default_branch = meta.get("default_branch") if isinstance(meta, dict) else None
+        if not isinstance(default_branch, str) or not default_branch:
+            return unknown("could not read the repository's default branch")
         run = gh.get(f"/repos/{repo_name}/actions/runs/{run_id}")
         if not isinstance(run, dict):
             return unknown("the Actions API returned no workflow run")
@@ -542,6 +552,23 @@ def trusted_verdict(
         if not isinstance(number, int):
             return unknown("pull request without a number")
         pr = gh.get(f"/repos/{repo_name}/pulls/{number}")
+        # A newer pull_request run of ci for the same commit brings its own, fresher verdict.
+        newer = gh.get(
+            f"/repos/{repo_name}/actions/workflows/{Path(WORKFLOW_PATH).name}/runs",
+            {"head_sha": head_sha, "event": "pull_request", "per_page": 100},
+        )
+        runs = newer.get("workflow_runs") if isinstance(newer, dict) else None
+        if not isinstance(runs, list):
+            return unknown("the Actions API returned no run list for ci")
+        if any(
+            isinstance(r, dict)
+            and isinstance(r.get("id"), int)
+            and r["id"] > int(run_id)
+            and r.get("event") == "pull_request"
+            and r.get("head_sha") == head_sha
+            for r in runs
+        ):
+            return DoneResult(Verdict.UNKNOWN, (SUPERSEDED,), None, None, None)
     except waivers_mod._ApiError as e:
         return unknown(f"GitHub API error: {e}")
     if not isinstance(pr, dict) or not isinstance(pr.get("base"), dict):
@@ -549,6 +576,13 @@ def trusted_verdict(
     base_sha = pr["base"].get("sha")
     if not isinstance(base_sha, str) or not _SHA_RE.fullmatch(base_sha):
         return unknown("pull request without a base SHA")
+    # Only PRs into the default branch are judged: a PR picks its own base branch, and a base an
+    # attacker pushed would bring its own policy and ci.yml (v0.5 review #1).
+    if pr["base"].get("ref") != default_branch:
+        return unknown(
+            f"the PR targets {str(pr['base'].get('ref'))[:80]!r}, not the default branch "
+            f"{default_branch!r}; only PRs into the default branch are judged"
+        )
     if (pr.get("head") or {}).get("sha") != head_sha:
         problems.append("the PR head moved on since this run; this result is for an old commit")
 
@@ -562,6 +596,10 @@ def trusted_verdict(
         root, "diff", "--no-renames", "--name-only", mb.stdout.strip(), head_sha, "--",
         WORKFLOW_PATH,
     ).stdout.strip()  # fmt: skip
+    blob = None
+    if changed:
+        r = git._git(root, "rev-parse", f"{head_sha}:{WORKFLOW_PATH}", check=False)
+        blob = r.stdout.strip() if r.returncode == 0 else "0" * 40  # deleted: never matches
 
     # The waiver and binding code read the PR from a pull_request event payload; build one from
     # the API answer above (trusted), never from the triggering run.
@@ -595,14 +633,17 @@ def trusted_verdict(
             jobs=jobs,
             self_bind=True,
             extra_problems=tuple(problems),
-            workflow_changed=bool(changed),
+            workflow_blob=blob,
         )
 
 
 def commit_status(result: DoneResult) -> tuple[str, str]:
     """(state, description) for the `repomarshal/verdict` commit status. Built from the verdict
-    alone, never from PR-controlled text. Only PASS is `success`."""
+    alone, never from PR-controlled text. Only PASS is `success`. "skip" means post nothing:
+    a newer ci run for the same commit is judged separately."""
     v = result.verdict
+    if result.reasons == (SUPERSEDED,):
+        return "skip", "superseded by a newer ci run for this commit"
     if v is Verdict.PASS:
         return "success", "PASS: every required gate passed (or was waived by a person)"
     if v is Verdict.FAIL:

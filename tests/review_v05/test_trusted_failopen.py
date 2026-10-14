@@ -54,6 +54,10 @@ def serve(gh: FakeGitHub, pr: PR, base_ref: str = "main") -> None:
     }
     gh.routes[f"/repos/{REPO}/commits/{head}/pulls"] = [pull]
     gh.routes[f"/repos/{REPO}/pulls/3"] = pull
+    # Since the fix for #3/#4 the judge also asks whether a newer ci run supersedes this one.
+    gh.routes[f"/repos/{REPO}/actions/workflows/ci.yml/runs"] = {
+        "workflow_runs": [gh.routes[f"/repos/{REPO}/actions/runs/{RUN_ID}"]]
+    }
 
 
 def forge_pass(results: Path, jobs: dict) -> None:
