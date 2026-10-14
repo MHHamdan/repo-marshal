@@ -242,12 +242,17 @@ def finish(
     granted: tuple = (),
     waiver_notes: tuple[str, ...] = (),
     extra_reasons: tuple[str, ...] = (),
+    blockers: tuple[str, ...] = (),
 ) -> DoneResult:
-    """Steps 5-6 of done(): fold the verdict and write the evidence record."""
+    """Steps 5-6 of done(): fold the verdict and write the evidence record. Any `blockers`
+    (e.g. results that cannot be bound to the change) turn a PASS into UNKNOWN; waivers never
+    lift them."""
     p = prep.plan
     v, reasons = verdict.fold(
         p, tuple(results), tree_changed, p.policy.waivers_permit_pass, granted
     )
+    if blockers and v is Verdict.PASS:
+        v = Verdict.UNKNOWN
     reasons = tuple(extra_reasons) + tuple(reasons) + tuple(f"waivers: {n}" for n in waiver_notes)
     return _record(prep.root, p, results, prep.before, after, v, reasons, granted)
 

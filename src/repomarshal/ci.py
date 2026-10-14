@@ -23,11 +23,13 @@ A result counts only when it binds. Otherwise it is UNKNOWN (fail closed). Bindi
 - the result file names the same gate, plan hash, HEAD and tree, and the gate did not change the
   tree;
 - GitHub's own record of that gate's job agrees with the file. Read through the Actions API
-  (`actions: read`), the job `rm-gate-<index>` must have a "run gate" step whose conclusion
-  matches the claimed status (success exactly when PASS) and an "upload result" step that
-  succeeded. PR code in one gate job can read the runner's artifact token and upload a forged
-  file under another gate's name, but it cannot change another job's step conclusions. A
-  forgery can therefore at worst turn a real FAIL into UNKNOWN, never into PASS.
+  (`actions: read`). The STATUS comes from that record: step "run gate" fails exactly when the
+  gate FAILed, and step "gate passed" succeeds exactly when it PASSed. The file adds details
+  only if it agrees, and the "upload result" step must have succeeded for a PASS. PR code in
+  one gate job can read the runner's artifact token and upload a forged file under another
+  gate's name, but it cannot change another job's step conclusions. A forgery can at worst hide
+  a PASS's details (UNKNOWN). It can never create a PASS, nor turn a real FAIL into a waivable
+  UNKNOWN.
 
 What a gate job reports about ITSELF is only as trustworthy as that gate, as in any CI: the PR's
 code decides its own exit code. The split guarantees that no gate influences the plan, the
@@ -56,7 +58,8 @@ from repomarshal.model import (
 
 SCHEMA = "repomarshal.ci/1"
 JOB_PREFIX = "rm-gate-"
-STEP_RUN = "run gate"
+STEP_RUN = "run gate"  # fails exactly when the gate FAILed (exit 1)
+STEP_PASSED = "gate passed"  # succeeds exactly when the gate PASSed
 STEP_UPLOAD = "upload result"
 RESULT_FILE = "result.json"
 MAX_RESULT_BYTES = 1 << 20
@@ -227,7 +230,8 @@ def fetch_job_steps(env: Mapping[str, str]) -> tuple[JobSteps | None, str | None
     from repomarshal import waivers  # lazy: urllib only on the CI path
 
     repo = env.get("GITHUB_REPOSITORY", "")
-    run_id, attempt = env.get("GITHUB_RUN_ID", ""), env.get("GITHUB_RUN_ATTEMPT", "1")
+    # No default attempt: on a re-run, attempt 1's jobs are another run's evidence (v0.4 #4).
+    run_id, attempt = env.get("GITHUB_RUN_ID", ""), env.get("GITHUB_RUN_ATTEMPT", "")
     token = env.get("GITHUB_TOKEN", "")
     api_url = env.get("GITHUB_API_URL") or waivers.DEFAULT_API_URL
     if not (waivers._REPO_RE.fullmatch(repo) and run_id.isdigit() and attempt.isdigit()):
@@ -265,6 +269,21 @@ def fetch_job_steps(env: Mapping[str, str]) -> tuple[JobSteps | None, str | None
     return None, "Actions jobs API: too many pages"
 
 
+def _github_status(steps: Mapping[str, str]) -> tuple[ResultStatus, str]:
+    """The gate's outcome as GitHub recorded it for its own job. The workflow contract is:
+    step "run gate" fails exactly when the gate FAILed, and step "gate passed" succeeds exactly
+    when it PASSed. PR code in another job cannot change these conclusions, so a forged result
+    file can never turn a real FAIL into a waivable UNKNOWN (v0.4 review #2)."""
+    ran, passed = steps.get(STEP_RUN), steps.get(STEP_PASSED)
+    if ran == "failure":
+        return ResultStatus.FAIL, f"step {STEP_RUN!r} failed"
+    if ran == "success" and passed == "success":
+        return ResultStatus.PASS, f"steps {STEP_RUN!r} and {STEP_PASSED!r} succeeded"
+    if ran == "success" and passed == "failure":
+        return ResultStatus.UNKNOWN, f"step {STEP_PASSED!r} failed"
+    return ResultStatus.UNKNOWN, f"steps {STEP_RUN!r}={ran!r}, {STEP_PASSED!r}={passed!r}"
+
+
 def _bound_result(
     index: int,
     gate_id: str,
@@ -274,49 +293,52 @@ def _bound_result(
     jobs: JobSteps | None,
     jobs_problem: str | None,
 ) -> tuple[GateResult, str]:
-    """(result, tree digest after the gate) for one isolated gate; UNKNOWN unless every binding
-    holds. An unbound result reports the expected tree (it vouches for nothing anyway)."""
+    """(result, tree digest after the gate) for one isolated gate.
 
-    def unknown(why: str) -> tuple[GateResult, str]:
-        return (
-            GateResult(gate_id, kind, ResultStatus.UNKNOWN, f"result not bound: {why}"),
-            expect["tree"],
-        )
-
+    The STATUS comes from GitHub's record of the gate job (_github_status); the result file only
+    adds details, and only when it binds (same gate, plan, HEAD, tree; uploaded by the job
+    itself) and agrees with that record. A PASS needs a bound, agreeing file. A FAIL recorded by
+    GitHub stays FAIL even without a usable file. Everything else is UNKNOWN."""
     name = f"{JOB_PREFIX}{index}"
+    tree = expect["tree"]
+
+    def plain(status: ResultStatus, why: str) -> tuple[GateResult, str]:
+        prefix = "result not bound: " if status is ResultStatus.UNKNOWN else f"[{name}] "
+        return GateResult(gate_id, kind, status, prefix + why), tree
+
     if jobs is None:
-        return unknown(jobs_problem or "no GitHub record of the gate jobs")
+        return plain(ResultStatus.UNKNOWN, jobs_problem or "no GitHub record of the gate jobs")
     steps = jobs.get(name)
     if steps is None:
-        return unknown(f"no job {name!r} in this run attempt")
+        return plain(ResultStatus.UNKNOWN, f"no job {name!r} in this run attempt")
+    status, recorded = _github_status(steps)
+    fallback = (
+        (ResultStatus.FAIL, f"GitHub recorded the gate as failed ({recorded}); details: ")
+        if status is ResultStatus.FAIL
+        else (ResultStatus.UNKNOWN, f"job {name} ({recorded}): ")
+    )
+
+    def unusable(why: str) -> tuple[GateResult, str]:
+        return plain(fallback[0], fallback[1] + why)
+
     if steps.get(STEP_UPLOAD) != "success":
-        return unknown(f"job {name}: step {STEP_UPLOAD!r} is {steps.get(STEP_UPLOAD)!r}")
-    ran = steps.get(STEP_RUN)
-    if ran not in ("success", "failure"):
-        return unknown(f"job {name}: step {STEP_RUN!r} is {ran!r}")
+        return unusable(f"step {STEP_UPLOAD!r} is {steps.get(STEP_UPLOAD)!r}")
     doc = _read_json(results_dir / name / RESULT_FILE)
     if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
-        return unknown(f"{name}/{RESULT_FILE} missing or not a {SCHEMA} result")
+        return unusable(f"{name}/{RESULT_FILE} missing or not a {SCHEMA} result")
     for key, want in (
         ("gate_id", gate_id),
         ("plan_hash", expect["plan_hash"]),
         ("head", expect["head"]),
-        ("tree_before", expect["tree"]),
+        ("tree_before", tree),
     ):
         if doc.get(key) != want:
-            return unknown(f"{name}: {key} does not match this plan")
+            return unusable(f"{key} in the result file does not match this plan")
     raw = doc.get("result")
     if not isinstance(raw, dict) or raw.get("gate_id") != gate_id:
-        return unknown(f"{name}: malformed result")
-    try:
-        status = ResultStatus(raw.get("status"))
-    except ValueError:
-        return unknown(f"{name}: unknown status {raw.get('status')!r}")
-    # GitHub's record must agree: the step succeeded exactly when the gate passed.
-    if (status is ResultStatus.PASS) != (ran == "success"):
-        return unknown(f"{name}: file says {status.value} but GitHub recorded step {ran!r}")
-    if status not in (ResultStatus.PASS, ResultStatus.FAIL, ResultStatus.UNKNOWN):
-        return unknown(f"{name}: status {status.value} is not a gate outcome")
+        return unusable("malformed result")
+    if raw.get("status") != status.value:
+        return unusable(f"the file says {raw.get('status')!r}, GitHub recorded {status.value}")
 
     def text(key: str) -> str | None:
         value = raw.get(key)
@@ -341,6 +363,15 @@ def _bound_result(
     )
     after = doc.get("tree_after")
     return result, after if isinstance(after, str) and after else "(missing)"
+
+
+def passed_step(result_file: Path) -> int:
+    """`repomarshal ci passed`: exit 0 exactly when the gate job's result file says PASS. The
+    workflow's "gate passed" step, whose conclusion GitHub records (see _github_status)."""
+    doc = _read_json(result_file)
+    raw = doc.get("result") if isinstance(doc, dict) else None
+    ok = isinstance(raw, dict) and raw.get("status") == ResultStatus.PASS.value
+    return 0 if ok else 1
 
 
 def verdict_step(
@@ -399,7 +430,8 @@ def verdict_step(
     after = git.tree_digest(root, base=prep.base_sha)
     tree_changed = tree_changed or after != before
     extra = tuple(f"binding: {x}" for x in problems)
-    return api.finish(prep, results, after, tree_changed, granted, notes, extra)
+    # Binding problems are not waivable and hold even when only native gates ran (v0.4 #3).
+    return api.finish(prep, results, after, tree_changed, granted, notes, extra, blockers=extra)
 
 
 __all__ = [

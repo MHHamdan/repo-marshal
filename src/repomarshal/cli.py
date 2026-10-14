@@ -20,6 +20,7 @@ v0.4 split CI (threat T26; behaviour in repomarshal.ci):
     repomarshal ci plan    --base SHA [--out FILE] [--github-output]   exit 0 when written
     repomarshal ci gate    --base SHA --gate ID --expect JSON --out FILE  exit 0/1/2
     repomarshal ci verdict --base SHA --expect JSON --results DIR [--json]  exit = verdict
+    repomarshal ci passed  --result FILE                                    exit 0 iff PASS
 """
 
 from __future__ import annotations
@@ -103,6 +104,8 @@ def _parser() -> argparse.ArgumentParser:
     cp = cisub.add_parser("plan", help="plan job: the plan, binding data and the gate matrix")
     cg = cisub.add_parser("gate", help="gate job: run one isolated gate, write its raw result")
     cv = cisub.add_parser("verdict", help="verdict job: bind the gate results and fold")
+    cpass = cisub.add_parser("passed", help="exit 0 exactly when a gate result file says PASS")
+    cpass.add_argument("--result", required=True, help="the gate job's result.json")
     for c in (cp, cg, cv):
         c.add_argument("--repo", default=".", help="repository path (default: .)")
         c.add_argument("--base", required=True, help="BASE commit (the PR base SHA)")
@@ -234,6 +237,8 @@ def _ci(args: argparse.Namespace) -> int:
     from repomarshal import ci
 
     env = dict(os.environ)
+    if args.ci_command == "passed":
+        return ci.passed_step(Path(args.result))
     if args.ci_command == "plan":
         out = ci.plan_step(args.repo, args.base, env, waivers=args.waivers)
         text = json.dumps(out, indent=2, sort_keys=True)

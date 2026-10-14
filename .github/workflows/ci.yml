@@ -107,24 +107,28 @@ jobs:
       - name: Install the judge (RepoMarshal) from the PR's BASE commit
         # Before any PR-controlled code runs: install RepoMarshal from BASE, outside the
         # workspace, so the PR cannot change the code that judges it (v0.3 review).
+        # Never from the PR checkout: `python -m X` there would import a PR file named X
+        # (v0.4 review). -I keeps the cwd off sys.path; the step also runs outside the checkout.
+        working-directory: ${{ runner.temp }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           mkdir -p "$RUNNER_TEMP/rm-base"
-          git archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/rm-base"
-          python -m venv "$RUNNER_TEMP/rm-venv"
-          "$RUNNER_TEMP/rm-venv/bin/python" -m pip install --quiet "$RUNNER_TEMP/rm-base"
+          git -C "$GITHUB_WORKSPACE" archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/rm-base"
+          python -I -m venv "$RUNNER_TEMP/rm-venv"
+          "$RUNNER_TEMP/rm-venv/bin/python" -I -m pip install --quiet "$RUNNER_TEMP/rm-base"
       - name: Install the gate tools (ruff, pytest) from BASE's dev requirements
         # Not `pip install -e .`, which would run the PR's build code. Every job installs the same
         # tools: tool availability is part of the plan, and the plans must match.
+        working-directory: ${{ runner.temp }}
         run: |
-          "$RUNNER_TEMP/rm-venv/bin/python" - "$RUNNER_TEMP/rm-base/pyproject.toml" \
+          "$RUNNER_TEMP/rm-venv/bin/python" -I - "$RUNNER_TEMP/rm-base/pyproject.toml" \
             > "$RUNNER_TEMP/dev-requirements.txt" <<'PY'
           import sys, tomllib
           with open(sys.argv[1], "rb") as f:
               print("\n".join(tomllib.load(f)["project"]["optional-dependencies"]["dev"]))
           PY
-          python -m pip install --quiet -r "$RUNNER_TEMP/dev-requirements.txt"
+          python -I -m pip install --quiet -r "$RUNNER_TEMP/dev-requirements.txt"
       - name: Git identity for fixture commits
         run: |
           git config --global user.email "ci@example.invalid"
@@ -168,38 +172,51 @@ jobs:
       - name: Install the judge (RepoMarshal) from the PR's BASE commit
         # Before any PR-controlled code runs: install RepoMarshal from BASE, outside the
         # workspace, so the PR cannot change the code that judges it (v0.3 review).
+        # Never from the PR checkout: `python -m X` there would import a PR file named X
+        # (v0.4 review). -I keeps the cwd off sys.path; the step also runs outside the checkout.
+        working-directory: ${{ runner.temp }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           mkdir -p "$RUNNER_TEMP/rm-base"
-          git archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/rm-base"
-          python -m venv "$RUNNER_TEMP/rm-venv"
-          "$RUNNER_TEMP/rm-venv/bin/python" -m pip install --quiet "$RUNNER_TEMP/rm-base"
+          git -C "$GITHUB_WORKSPACE" archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/rm-base"
+          python -I -m venv "$RUNNER_TEMP/rm-venv"
+          "$RUNNER_TEMP/rm-venv/bin/python" -I -m pip install --quiet "$RUNNER_TEMP/rm-base"
       - name: Install the gate tools (ruff, pytest) from BASE's dev requirements
         # Not `pip install -e .`, which would run the PR's build code. Every job installs the same
         # tools: tool availability is part of the plan, and the plans must match.
+        working-directory: ${{ runner.temp }}
         run: |
-          "$RUNNER_TEMP/rm-venv/bin/python" - "$RUNNER_TEMP/rm-base/pyproject.toml" \
+          "$RUNNER_TEMP/rm-venv/bin/python" -I - "$RUNNER_TEMP/rm-base/pyproject.toml" \
             > "$RUNNER_TEMP/dev-requirements.txt" <<'PY'
           import sys, tomllib
           with open(sys.argv[1], "rb") as f:
               print("\n".join(tomllib.load(f)["project"]["optional-dependencies"]["dev"]))
           PY
-          python -m pip install --quiet -r "$RUNNER_TEMP/dev-requirements.txt"
+          python -I -m pip install --quiet -r "$RUNNER_TEMP/dev-requirements.txt"
       - name: Git identity for fixture commits
         run: |
           git config --global user.email "ci@example.invalid"
           git config --global user.name "CI"
+      # The names and outcomes of the next two steps are the binding contract: the dogfood job
+      # reads their conclusions through the Actions API, where PR code in another job cannot
+      # change them. "run gate" fails exactly when the gate FAILed; "gate passed" succeeds
+      # exactly when it PASSed. Anything else is UNKNOWN.
       - name: run gate
-        # The step name is part of the binding: the dogfood job checks this step's conclusion
-        # through the Actions API. Exit 0 PASS, 1 FAIL, 2 anything else.
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           RM_EXPECT: ${{ needs.rm-plan.outputs.expect }}
           RM_GATE: ${{ matrix.gate }}
         run: |
+          code=0
           "$RUNNER_TEMP/rm-venv/bin/repomarshal" ci gate --base "$BASE_SHA" --gate "$RM_GATE" \
-            --expect "$RM_EXPECT" --out "$RUNNER_TEMP/rm-result/result.json"
+            --expect "$RM_EXPECT" --out "$RUNNER_TEMP/rm-result/result.json" || code=$?
+          echo "repomarshal ci gate exit code: $code (0 PASS, 1 FAIL, 2 other)"
+          if [ "$code" -eq 1 ]; then exit 1; fi
+      - name: gate passed
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$RUNNER_TEMP/rm-venv/bin/repomarshal" ci passed --result "$RUNNER_TEMP/rm-result/result.json"
       - name: upload result
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -231,24 +248,28 @@ jobs:
       - name: Install the judge (RepoMarshal) from the PR's BASE commit
         # Before any PR-controlled code runs: install RepoMarshal from BASE, outside the
         # workspace, so the PR cannot change the code that judges it (v0.3 review).
+        # Never from the PR checkout: `python -m X` there would import a PR file named X
+        # (v0.4 review). -I keeps the cwd off sys.path; the step also runs outside the checkout.
+        working-directory: ${{ runner.temp }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           mkdir -p "$RUNNER_TEMP/rm-base"
-          git archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/rm-base"
-          python -m venv "$RUNNER_TEMP/rm-venv"
-          "$RUNNER_TEMP/rm-venv/bin/python" -m pip install --quiet "$RUNNER_TEMP/rm-base"
+          git -C "$GITHUB_WORKSPACE" archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/rm-base"
+          python -I -m venv "$RUNNER_TEMP/rm-venv"
+          "$RUNNER_TEMP/rm-venv/bin/python" -I -m pip install --quiet "$RUNNER_TEMP/rm-base"
       - name: Install the gate tools (ruff, pytest) from BASE's dev requirements
         # Not `pip install -e .`, which would run the PR's build code. Every job installs the same
         # tools: tool availability is part of the plan, and the plans must match.
+        working-directory: ${{ runner.temp }}
         run: |
-          "$RUNNER_TEMP/rm-venv/bin/python" - "$RUNNER_TEMP/rm-base/pyproject.toml" \
+          "$RUNNER_TEMP/rm-venv/bin/python" -I - "$RUNNER_TEMP/rm-base/pyproject.toml" \
             > "$RUNNER_TEMP/dev-requirements.txt" <<'PY'
           import sys, tomllib
           with open(sys.argv[1], "rb") as f:
               print("\n".join(tomllib.load(f)["project"]["optional-dependencies"]["dev"]))
           PY
-          python -m pip install --quiet -r "$RUNNER_TEMP/dev-requirements.txt"
+          python -I -m pip install --quiet -r "$RUNNER_TEMP/dev-requirements.txt"
       - name: Git identity for fixture commits
         run: |
           git config --global user.email "ci@example.invalid"

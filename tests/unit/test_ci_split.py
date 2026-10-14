@@ -87,6 +87,19 @@ class PR:
         return {**GIT_ENV, "GITHUB_EVENT_PATH": str(self.event), **extra}
 
 
+def record(code: int) -> dict[str, str]:
+    """GitHub's step conclusions for a gate job whose `repomarshal ci gate` exited `code`, under
+    the workflow contract: "run gate" fails only on FAIL (1); "gate passed" runs after it and
+    succeeds only on PASS (0)."""
+    if code == 1:
+        return {ci.STEP_RUN: "failure", ci.STEP_PASSED: "skipped", ci.STEP_UPLOAD: "success"}
+    return {
+        ci.STEP_RUN: "success",
+        ci.STEP_PASSED: "success" if code == 0 else "failure",
+        ci.STEP_UPLOAD: "success",
+    }
+
+
 def run_split(pr: PR, tamper=None, jobs_override=None):
     """Plan job -> gate jobs (fresh clones) -> verdict job (fresh clone). Returns the
     DoneResult, the plan output and the jobs record."""
@@ -98,10 +111,7 @@ def run_split(pr: PR, tamper=None, jobs_override=None):
         out = results / f"rm-gate-{i}" / "result.json"
         code = ci.gate_step(pr.clone(f"gate-job-{i}"), pr.base, gate, planned["expect"], out,
                             pr.env())  # fmt: skip
-        jobs[f"rm-gate-{i}"] = {
-            "run gate": "success" if code == 0 else "failure",
-            "upload result": "success",
-        }
+        jobs[f"rm-gate-{i}"] = record(code)
     if tamper:
         tamper(results, jobs, planned)
     res = ci.verdict_step(
@@ -176,7 +186,7 @@ def test_plan_job_output_tampered_is_unknown(tmp_path):
 
 def test_forged_pass_for_a_failed_gate_is_not_pass(tmp_path):
     """Another gate's job uploads a PASS file under rm-gate-1. GitHub recorded the real step
-    conclusion (failure), so the result is UNKNOWN, never PASS."""
+    conclusion (failure), so the result stays FAIL: never PASS, never a waivable UNKNOWN."""
 
     def tamper(results, jobs, planned):
         f = results / "rm-gate-1" / "result.json"
@@ -185,8 +195,8 @@ def test_forged_pass_for_a_failed_gate_is_not_pass(tmp_path):
         f.write_text(json.dumps(doc))
 
     res, _, _ = run_split(PR(tmp_path, unit="1"), tamper=tamper)
-    assert res.verdict is Verdict.UNKNOWN, res.reasons
-    assert statuses(res)["tests"] == "UNKNOWN"
+    assert res.verdict is Verdict.FAIL, res.reasons
+    assert statuses(res)["tests"] == "FAIL"
 
 
 def test_step_success_with_fail_file_is_unknown(tmp_path):
@@ -257,7 +267,7 @@ def test_definition_change_is_reapplied_by_the_verdict_job(tmp_path):
             doc = json.loads(f.read_text())
             doc["result"]["status"] = "PASS"
             f.write_text(json.dumps(doc))
-            jobs[f"rm-gate-{i}"]["run gate"] = "success"
+            jobs[f"rm-gate-{i}"] = record(0)
 
     res, _, _ = run_split(pr, tamper=tamper)
     assert res.verdict is Verdict.UNKNOWN
@@ -408,7 +418,7 @@ def test_cli_round_trip_through_github_output(tmp_path, monkeypatch, capsys):
              "--gate", entry["gate"], "--expect", outputs["expect"],
              "--out", str(tmp_path / "results" / name / "result.json")]
         )  # fmt: skip
-        jobs[name] = {ci.STEP_RUN: "success" if code == 0 else "failure", ci.STEP_UPLOAD: "success"}
+        jobs[name] = record(code)
     monkeypatch.setattr(ci, "fetch_job_steps", lambda env: (jobs, None))
     capsys.readouterr()
     code = cli.main(
@@ -417,3 +427,39 @@ def test_cli_round_trip_through_github_output(tmp_path, monkeypatch, capsys):
     )  # fmt: skip
     assert code == 0, capsys.readouterr().out
     assert json.loads(capsys.readouterr().out)["verdict"] == "PASS"
+
+
+def test_unknown_gate_maps_to_unknown_from_the_step_record(tmp_path):
+    """A gate that ends UNKNOWN (here: it modified the tree; `ci gate` exits 2): "run gate"
+    succeeds, "gate passed" fails."""
+    pr = PR(tmp_path, lint="touch")
+    res, _, jobs = run_split(pr)
+    assert jobs["rm-gate-0"] == record(2)
+    assert statuses(res)["style"] == "UNKNOWN"
+
+
+def test_github_fail_record_stays_fail_without_a_result_file(tmp_path):
+    def tamper(results, jobs, planned):
+        (results / "rm-gate-1" / "result.json").unlink()
+
+    res, _, _ = run_split(PR(tmp_path, unit="1"), tamper=tamper)
+    assert statuses(res)["tests"] == "FAIL"
+
+
+def test_passed_step_reads_only_a_pass(tmp_path):
+    f = tmp_path / "r.json"
+    assert ci.passed_step(f) == 1  # missing
+    for status, code in (("PASS", 0), ("FAIL", 1), ("UNKNOWN", 1), ("WAIVED", 1)):
+        f.write_text(json.dumps({"result": {"status": status}}))
+        assert ci.passed_step(f) == code, status
+    f.unlink()
+    f.mkdir()
+    assert ci.passed_step(f) == 1  # not a regular file
+
+
+def test_cli_passed(tmp_path):
+    from repomarshal import cli
+
+    f = tmp_path / "r.json"
+    f.write_text(json.dumps({"result": {"status": "PASS"}}))
+    assert cli.main(["ci", "passed", "--result", str(f)]) == 0

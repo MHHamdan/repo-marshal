@@ -199,7 +199,8 @@ def test_waived_status_in_a_result_file_is_unknown(tmp_path):
         _edit(results, _index(planned, "tests"), status="WAIVED")
 
     res, _, _ = run_split(PR(tmp_path, unit="1"), tamper=tamper)
-    assert statuses(res)["tests"] == "UNKNOWN"
+    # Since the fix for #2 the status comes from GitHub's record of the job: the gate failed.
+    assert statuses(res)["tests"] == "FAIL"
 
 
 def test_merge_commit_with_pr_head_as_first_parent_is_unbound(tmp_path):
