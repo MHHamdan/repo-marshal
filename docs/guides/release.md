@@ -37,7 +37,11 @@ reserve it, so publish soon after adding it.
 2. **Signed tags**: add the GPG or SSH key you sign with as a **Signing key** under your GitHub
    account (Settings → SSH and GPG keys), so that GitHub reports the tag's signature as
    verified. The workflow refuses tags whose `verification.verified` is not `true`.
-3. Optional but recommended: a **tag ruleset** for `v*` that restricts tag creation to you and
+3. **Repository variable `RELEASE_TAGGER_EMAILS`** (Settings → Secrets and variables → Actions →
+   Variables): the comma-separated tagger emails allowed to release, e.g. your own. GitHub
+   verifies a tag only when the signing key belongs to an account with that verified email, so
+   this pins *who* released. Without the variable, every release is refused.
+4. Optional but recommended: a **tag ruleset** for `v*` that restricts tag creation to you and
    blocks updates and deletions, so a published version's tag cannot be moved.
 
 ## Cutting a release
@@ -57,15 +61,18 @@ Then approve the `publish` job in the Actions tab.
 The **build** job (`contents: read` only) refuses to build unless:
 
 - the tag name is `v<major>.<minor>.<patch>`;
-- the tag is an annotated tag whose signature GitHub reports as verified;
+- the tag is an annotated tag whose signature GitHub reports as verified, by a tagger listed in
+  `RELEASE_TAGGER_EMAILS`;
 - the tag points at exactly the commit the run checked out;
-- that commit is on the default branch;
+- that commit is on the default branch (checked against `refs/remotes/origin/<default>`, so a
+  tag named like the branch cannot stand in for it);
 - the tag version, `pyproject.toml` and `repomarshal.__version__` agree.
 
 It then builds the sdist and wheel from that commit, with pinned `build==1.2.2.post1` and
 `hatchling==1.27.0`, smoke-tests the wheel, and uploads them as an artifact.
 
 The **publish** job holds the only credential: `id-token: write` in the `pypi` environment. It
-checks out nothing and runs no repository code. It downloads the two files and uploads them
+checks out nothing and runs no repository code. It downloads the files, checks that they are
+exactly this version's sdist and wheel (build hooks ran repository code in the build job), and uploads them
 with `pypa/gh-action-pypi-publish` (pinned by commit), which also publishes PEP 740
 attestations.

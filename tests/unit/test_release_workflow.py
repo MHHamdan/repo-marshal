@@ -19,6 +19,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 REPO = "acme/repomarshal"
 COMMIT = "c" * 40
 TAG_SHA = "d" * 40
+TAGGER = "maintainer@example.invalid"
 
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="needs jq")
 
@@ -63,7 +64,7 @@ def gh_stub(tmp: Path, routes: dict[str, object]) -> Path:
 def run(script: str, tmp: Path, bindir: Path, cwd: Path | None = None, **env: str):
     (tmp / "step.sh").write_text(script)
     full = {**GIT_ENV, "PATH": f"{bindir}{os.pathsep}{GIT_ENV['PATH']}",
-            "GITHUB_REPOSITORY": REPO, **env}  # fmt: skip
+            "GITHUB_REPOSITORY": REPO, "ALLOWED_TAGGERS": TAGGER, **env}  # fmt: skip
     return subprocess.run(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(tmp / "step.sh")],
         cwd=cwd or tmp, env=full, capture_output=True, text=True, check=False,
@@ -71,9 +72,11 @@ def run(script: str, tmp: Path, bindir: Path, cwd: Path | None = None, **env: st
 
 
 def tag_routes(tag: str = "v0.1.0", annotated: bool = True, verified: bool = True,
-               target: str = COMMIT, target_type: str = "commit") -> dict[str, object]:  # fmt: skip
+               target: str = COMMIT, target_type: str = "commit",
+               tagger: str = "maintainer@example.invalid") -> dict[str, object]:  # fmt: skip
     ref = {"object": {"type": "tag" if annotated else "commit", "sha": TAG_SHA}}
     obj = {
+        "tagger": {"name": "Maintainer", "email": tagger},
         "object": {"type": target_type, "sha": target},
         "verification": {"verified": verified, "reason": "valid" if verified else "unsigned"},
     }
@@ -178,7 +181,7 @@ def test_only_the_publish_job_can_mint_the_pypi_token():
     assert "id-token" not in build
     assert "id-token: write" in publish
     assert "name: pypi" in publish
-    for bad in ("checkout", "run:", "password", "secrets."):
+    for bad in ("checkout", "setup-python", "python", "pip ", "password", "secrets."):
         assert bad not in publish, bad
 
 
@@ -199,3 +202,34 @@ def test_versions_match_the_code():
 
     py = re.search(r'^version = "(.*)"$', (ROOT / "pyproject.toml").read_text(), re.M)
     assert py and py.group(1) == __version__ == "0.1.0"
+
+
+@pytest.mark.parametrize(
+    ("allowed", "tagger"),
+    [("", "maintainer@example.invalid"), ("someone@example.invalid", "maintainer@example.invalid"),
+     ("maintainer@example.invalid", "")],
+    ids=["variable-unset", "other-tagger", "no-tagger"],
+)  # fmt: skip
+def test_tagger_must_be_allowed(tmp_path, allowed, tagger):
+    p = run(step_script(VERIFY), tmp_path, gh_stub(tmp_path, tag_routes(tagger=tagger)),
+            TAG="v0.1.0", GITHUB_SHA=COMMIT, ALLOWED_TAGGERS=allowed)  # fmt: skip
+    assert p.returncode != 0
+
+
+def test_tagger_in_a_list_is_allowed(tmp_path):
+    p = run(step_script(VERIFY), tmp_path, gh_stub(tmp_path, tag_routes()), TAG="v0.1.0",
+            GITHUB_SHA=COMMIT, ALLOWED_TAGGERS=f"a@example.invalid, {TAGGER}")  # fmt: skip
+    assert p.returncode == 0, p.stdout + p.stderr
+
+
+@pytest.mark.parametrize("extra", [None, "evil.whl"], ids=["exact", "extra-file"])
+def test_publish_uploads_exactly_the_two_files(tmp_path, extra):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "repomarshal-0.1.0.tar.gz").write_text("s")
+    (dist / "repomarshal-0.1.0-py3-none-any.whl").write_text("w")
+    if extra:
+        (dist / extra).write_text("x")
+    p = run(step_script("exactly the two release files"), tmp_path, gh_stub(tmp_path, {}),
+            cwd=tmp_path, GITHUB_REF_NAME="v0.1.0")  # fmt: skip
+    assert (p.returncode == 0) == (extra is None), p.stdout + p.stderr

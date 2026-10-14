@@ -34,6 +34,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          # Comma-separated tagger emails allowed to release (repository variable). GitHub marks
+          # a tag verified only when the signing key belongs to an account with that verified
+          # email, so this pins WHO released, not just "someone signed" (v0.6 review F9).
+          ALLOWED_TAGGERS: ${{ vars.RELEASE_TAGGER_EMAILS }}
         run: |
           if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "tag '$TAG' is not v<major>.<minor>.<patch>"; exit 1
@@ -51,6 +55,18 @@ jobs:
           if [ "$verified" != "true" ]; then
             echo "tag '$TAG' signature is not verified by GitHub (reason: $reason)"; exit 1
           fi
+          tagger=$(printf '%s' "$tag" | jq -r '.tagger.email // ""')
+          if [ -z "$ALLOWED_TAGGERS" ]; then
+            echo "repository variable RELEASE_TAGGER_EMAILS is not set; refusing to release"; exit 1
+          fi
+          allowed=no
+          IFS=',' read -ra emails <<< "$ALLOWED_TAGGERS"
+          for e in "${emails[@]}"; do
+            [ -n "$tagger" ] && [ "$(echo "$e" | xargs)" = "$tagger" ] && allowed=yes
+          done
+          if [ "$allowed" != yes ]; then
+            echo "tagger '$tagger' is not in RELEASE_TAGGER_EMAILS"; exit 1
+          fi
           if [ "$target_type" != "commit" ] || [ "$target" != "$GITHUB_SHA" ]; then
             echo "tag '$TAG' points at $target_type $target, not the checked-out $GITHUB_SHA"; exit 1
           fi
@@ -65,7 +81,9 @@ jobs:
           TAG: ${{ github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH" || {
+          # The full ref: a TAG named origin/<branch> would win over the remote-tracking branch
+          # with the short name (v0.6 review F8).
+          git merge-base --is-ancestor "$GITHUB_SHA" "refs/remotes/origin/$DEFAULT_BRANCH" || {
             echo "$GITHUB_SHA is not on $DEFAULT_BRANCH"; exit 1; }
           want="${TAG#v}"
           py=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -1)
@@ -113,6 +131,16 @@ jobs:
         with:
           name: dist
           path: dist
+      - name: exactly the two release files
+        # Build hooks run repository code in the build job; whatever they produced, only the
+        # sdist and wheel of this version are uploaded.
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          ls -la dist
+          test "$(find dist -mindepth 1 | wc -l)" -eq 2
+          test -f "dist/repomarshal-$want.tar.gz" && test ! -L "dist/repomarshal-$want.tar.gz"
+          test -f "dist/repomarshal-$want-py3-none-any.whl"
+          test ! -L "dist/repomarshal-$want-py3-none-any.whl"
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist
