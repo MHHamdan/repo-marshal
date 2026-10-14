@@ -737,6 +737,12 @@ def is_lockfile(path: str) -> bool:
     return name in LOCKFILE_NAMES or any(fnmatch.fnmatchcase(name, g) for g in LOCKFILE_GLOBS)
 
 
+def is_pure_lockfile(path: str) -> bool:
+    """True for a generated lockfile (LOCKFILE_NAMES). requirements*.txt is not one: it is
+    hand-edited and names what gets installed, like a manifest (decisions: secrets)."""
+    return _parts(path)[1] in LOCKFILE_NAMES
+
+
 def _dependency_changed(f: ChangedFile, ctx: _Ctx) -> tuple[str, ...]:
     locks = tuple(p for p in _candidates(f) if is_lockfile(p))
     if locks:

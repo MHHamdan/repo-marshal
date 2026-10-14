@@ -221,13 +221,15 @@ compile(change, inventory, policy, task):
 | format, lint | `code.changed` or `tests.changed` in the gate's scope | NOT_APPLICABLE |
 | typecheck | `code.changed` or `tests.changed` in the gate's scope | NOT_APPLICABLE |
 | unit | `code.changed` or `tests.changed` in the gate's scope | **UNAVAILABLE** |
-| integration | risk is elevated, or `db.migration`, `dependency.changed`, `security.auth_path` | **UNAVAILABLE** |
-| secrets | Any `security.*`, `dependency.changed`, `agent.config_changed`, or risk elevated | (native, always present) |
+| integration | `db.migration`, `security.auth_path`, a test-tamper signal, or risk elevated together with `code.changed` (v0.3); `dependency.changed` alone no longer (v0.6) | **UNAVAILABLE** |
+| secrets | Any `security.*`, `dependency.changed`, `agent.config_changed`, or risk elevated. v0.6: `dependency.changed` does not count when every file that raised it is a lockfile (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock(b)`, `uv.lock`, `poetry.lock`, `Pipfile.lock`, `pdm.lock`, `Cargo.lock`, `go.sum`, `composer.lock`, `Gemfile.lock`, `npm-shrinkwrap.json`) whose added lines are fully visible (not binary or truncated) and carry no credential-bearing URL; a manifest such as `package.json`, `pyproject.toml` or `requirements*.txt` still counts | (native, always present) |
 | dep_audit | `dependency.changed` | **UNAVAILABLE** |
 | security_scan | `security.auth_path` | **UNAVAILABLE** |
 | skill_audit | `agent.skill_changed` | **UNAVAILABLE** |
 | runtime | `frontend.ui`, or `security.auth_path` together with `code.changed` | **UNAVAILABLE** |
 | a11y | `frontend.ui` | **UNAVAILABLE** |
+
+`dep_audit` and the widened `unit` gates stay required for every dependency change.
 
 `WHEN_CONFIGURED` holds the kinds marked NOT_APPLICABLE above. A repository without a linter has no
 lint obligation. A required verification the repository cannot perform is UNAVAILABLE, and the

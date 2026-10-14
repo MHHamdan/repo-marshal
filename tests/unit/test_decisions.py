@@ -316,13 +316,74 @@ def test_tamper_signal_requires_integration():
     assert d.status is REQ and d.reasons[0].signal == "tests.deleted"
 
 
-def test_dependency_change_requires_integration_secrets_and_dep_audit():
-    _, decisions = plan(change(mod("backend/uv.lock")))
+def test_lockfile_only_change_requires_unit_and_dep_audit_only():
+    # v0.6 (docs/evaluation.md §10): a dependency bump alone does not demand integration, and a
+    # lockfile-only change does not demand the secrets baseline.
+    _, decisions = plan(change(mod("backend/uv.lock", 'version = "2.1.0"')))
     g, k = by_gate(decisions), kind_level(decisions)
-    assert g["backend:integration"].status is REQ
-    assert g["native:secrets-diff"].status is REQ
+    assert g["backend:integration"].status is SKIP
     assert k[K.DEP_AUDIT].status is UNAV
     assert g["frontend:unit"].status is REQ  # dependency.changed widens
+    assert g["backend:unit"].status is REQ
+    secrets = g["native:secrets-diff"]
+    assert secrets.status is SKIP
+    assert secrets.reasons[0].signal == "dependency.changed"
+    assert secrets.reasons[0].text.startswith(
+        "dependency.changed comes only from lockfiles (backend/uv.lock)"
+    )
+    assert "does not require secrets" in secrets.reasons[0].text
+
+
+def test_manifest_dependency_change_still_requires_secrets_but_not_integration():
+    # The manifest cannot be read at BASE here, so dependency.changed fires (fail closed).
+    for manifest in ("frontend/package.json", "backend/pyproject.toml", "backend/requirements.txt"):
+        signals, decisions = plan(change(mod(manifest, "requests==2.32.0"), mod("backend/uv.lock")))
+        assert "dependency.changed" in {s.id for s in signals}, manifest
+        g = by_gate(decisions)
+        assert g["native:secrets-diff"].status is REQ, manifest
+        assert g["native:secrets-diff"].reasons[0].signal == "dependency.changed"
+        # (an unreadable package.json also fires tests.discovery_narrowed, which does demand it)
+        integration = {r.signal for r in g["backend:integration"].reasons}
+        assert "dependency.changed" not in integration, manifest
+        assert kind_level(decisions)[K.DEP_AUDIT].status is UNAV
+
+
+def test_lockfile_change_keeps_secrets_when_its_added_lines_are_not_clean():
+    hidden = (
+        ChangedFile("frontend/bun.lockb", FileStatus.MODIFIED, binary=True),
+        ChangedFile("backend/uv.lock", FileStatus.MODIFIED, added=("x",), truncated=True),
+        mod("frontend/package-lock.json", '"resolved": "https://ci:s3cr3t@registry.example/x.tgz"'),
+        # a rename from a manifest is not lockfile-only
+        ChangedFile("frontend/yarn.lock", FileStatus.RENAMED, old_path="frontend/package.json"),
+    )
+    for f in hidden:
+        g = by_gate(plan(change(f))[1])
+        assert g["native:secrets-diff"].status is REQ, f.path
+        assert g["backend:integration"].status is SKIP, f.path
+
+
+def test_lockfile_change_with_other_secrets_triggers_still_requires_secrets():
+    for other in (
+        mod("backend/app/auth/refresh.py", "x = 1"),  # security.auth_path (elevated)
+        mod("AGENTS.md", "- Test: `make test`"),  # agent.config_changed
+        mod(".github/workflows/ci.yml", "on: push"),  # ci.changed (elevated)
+        mod("backend/app/api/routes.py", "password = form['p']"),  # sensitive identifier
+    ):
+        d = by_gate(plan(change(mod("backend/uv.lock"), other))[1])["native:secrets-diff"]
+        assert d.status is REQ, other.path
+        assert "dependency.changed" not in {r.signal for r in d.reasons}, other.path
+    # auth path + lockfile: integration through security.auth_path, not the dependency
+    d = by_gate(plan(change(mod("backend/uv.lock"), mod("backend/app/auth/refresh.py")))[1])
+    assert d["backend:integration"].status is REQ
+    assert {r.signal for r in d["backend:integration"].reasons} == {"security.auth_path"}
+
+
+def test_dependency_task_no_longer_requires_integration():
+    _, decisions = plan(change(), task="bump the dependencies")
+    g, k = by_gate(decisions), kind_level(decisions)
+    assert g["backend:integration"].status is SKIP
+    assert g["native:secrets-diff"].status is REQ  # task text is never exempted
+    assert k[K.DEP_AUDIT].status is UNAV
 
 
 # --------------------------------------------------------------------------- task text (T8)
@@ -579,3 +640,4 @@ def test_taint_is_deterministic_and_invariants_hold():
     _check_invariants(a, WITH_ROOT)
     root = by_gate(a)["root:unit"]
     assert [t.signal for t in root.taint] == ["tests.deleted", "tests.skip_added"]
+
