@@ -76,7 +76,7 @@ that exist in code, or that are scheduled as v0.1 MUST/SHOULD in the roadmap.
 |---|---|---|---|---|
 | T18 | Code placed in a self-ignoring tool-cache directory (`.pytest_cache/` and others) | 1 | 2 | Only reachable through a visible change, such as a `sys.path` edit |
 | T19 | Git clean/smudge filters or a submodule with `ignore=all`, configured by the agent, altering what `git add` records | 1 | 3 | Not handled in v0.1. CI re-run is the anchor |
-| T20 | The agent deletes `.repomarshal/state/base.json` *and* moves refs before the first `done` | 1 | 3 | Falls back to automatic BASE. CI with an explicit BASE is the anchor |
+| T20 | The agent deletes the remembered BASE (`$GIT_DIR/repomarshal/base.json` since v0.3) *and* moves refs before the first `done` | 1 | 3 | Falls back to automatic BASE. CI with an explicit BASE is the anchor |
 
 ### Found by the v0.2 adversarial review (all fixed, each with a regression test in `tests/review_v02/`)
 
@@ -103,6 +103,33 @@ that exist in code, or that are scheduled as v0.1 MUST/SHOULD in the roadmap.
 | T21 | The hook is killed with SIGKILL (no handler possible) | 1 | 3 | Claude Code then treats it as a non-blocking error. CI is the anchor |
 | T22 | A Stop with no SessionStart anchor, on a default branch with no remote, after the agent committed | 2 | 3 | The committed work is indistinguishable from the baseline locally. Install the SessionStart hook, push to a remote, and rely on CI |
 | T23 | Tamper detection is heuristic: Make variables, conftest hooks, `setattr(..., "__test__", False)`, CI `run:` commands | 2 | 2 | Documented false negatives. Some false positives are accepted because the taint fails closed |
+
+### Found by the v0.3 adversarial review (all fixed, each with a regression test in `tests/review_v03/`)
+
+1. **Gate code could rewrite the GitHub event file before waivers were read.** A PR test could
+   point `head.sha` at an older, approved commit, or `number` at another PR's waiver. Waivers are
+   now collected before the first gate runs, as are BASE policy and CODEOWNERS.
+2. **A committed `.repomarshal/state/base.json` could move the CI BASE to an older commit** the PR
+   chose, and with it the policy, CODEOWNERS and gate definitions. The anchor state now lives in
+   the git directory (`$GIT_DIR/repomarshal/base.json`), which no commit can write.
+3. **A waiver could turn "nothing verified" into PASS.** PASS now needs at least one gate that
+   actually ran and passed.
+4. **A hook state file symlinked to `/dev/zero` could exhaust memory.** The resulting SIGKILL allows
+   the stop. State reads no longer follow a final symlink, read only regular files, and are capped
+   at 1 MiB (hook and anchor state).
+5. **A new skill added as a symlinked directory skipped the skill audit.** A symlink directly in a
+   skill root is now a skill change, and an unscanned changed skill makes the audit UNKNOWN.
+6. **A SkillSpector SAFE report over zero components mapped to PASS.** It is now UNKNOWN.
+7. **`.npmrc` edits were not Playwright definition changes.** Root and scope `.npmrc` now count.
+8. **Provider gates received the CI token.** Tokens are now stripped for provider gates as well
+   as command gates.
+9. **The dogfood job ran the PR's build code (`pip install -e .`) before installing the judge.**
+   The judge is now installed first, and the gates' tools come from BASE's requirements.
+
+| # | Remaining threat (v0.3) | L | I | Note |
+|---|---|---|---|---|
+| T26 | Gates run the PR's code in the same CI job and as the same user as the judge. After the first gate, that code can alter `.git`, the judge's files on disk, or the Python install | 1 | 3 | Everything the judge trusts is read before the first gate, and its modules are already loaded. A gate could still subvert the post-gate tree digest, so a gate that edits files might go unnoticed. Running the gates in a separate job or as a separate user is the complete fix |
+| T27 | Local waivers are only as strong as the TTY check: an agent that can drive a pseudo-terminal can type the confirmation | 2 | 2 | Local waivers are advisory, like every local PASS. CI ignores them |
 
 ## Residual risks that must be stated in the README
 

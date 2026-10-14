@@ -22,7 +22,7 @@ v0.3 scope (from the owner):
 | fix-inv | `v03/fix-inv` | the field findings in the inventory (ruff --no-fix, mypy files, check scripts, packageManager, test:* scripts, Makefile, pytest.ini in tests/, workspace scopes) | `inventory.py`, `tests/unit/test_inventory.py` | **merged**; all 23 field tests pass |
 | fix-sig | `v03/fix-sig` | the field findings in signals, decisions and context (`dependency.changed`, .test.tsx not UI, `.github/scripts` as CI, integration only with code or specific triggers, lockfiles out of context) | `signals.py`, `decisions.py`, `context.py` and their unit tests | **merged** |
 | adapters | `v03/adapters` | SkillSpector (`skill_audit`) and Playwright (`runtime`) providers, plus the `agent.skill_changed` signal | `src/repomarshal/providers/**`, `tests/unit/test_provider_*.py`, the `agent.skill_changed` rule in `signals.py` | **merged**; SkillSpector pinned to the v2.12.0 tag `c7958a3` (provenance corrected), Playwright 1.63.0 |
-| field-test | `v03/field-test` | `plan` / `done --dry-run` on 5 real repositories; findings as fixtures plus failing tests | `docs/evaluation.md`, `tests/field/**`, `tests/fixtures/field/**` | **merged**: 27 commits on 5 repos, gate precision 0.80, recall 0.94, 14 findings |
+| field-test | `v03/field-test` | `plan` / `done --dry-run` on 5 real repositories; findings as fixtures plus failing tests | `docs/evaluation.md`, `tests/field/**`, `tests/fixtures/field/**` | **merged**: 27 commits on 5 repos, gate precision 0.80, recall 0.94, 14 findings; after fixes recall 1.00 (§9) |
 
 Contract (committed):
 - `model.Waiver` / `WaiverSource`, `EvidenceRecord.waivers`, `GateResult.tool` and
@@ -37,24 +37,17 @@ Contract (committed):
 
 ## Next step
 
-Done on the lead branch:
-- fix-inv is merged;
-- the inventory drops Playwright's duplicate runtime gates;
-- `plan` cold start is back to a median of 177 ms (lazy waiver import, guarded by a test);
-- the field evaluation was re-run after the fixes (`docs/evaluation.md` §9): recall 1.000,
-  precision 0.66 against the frozen judgment and about 0.80 re-judged;
-- the README, roadmap and threat model are updated for v0.3.
+All v0.3 work is integrated on `claude/v0.3`:
+- all four agents and the two fix branches are merged;
+- the fresh fail-open review (`tests/review_v03/`) confirmed 8 fail-open paths plus one CI
+  ordering issue, and all are fixed with regression tests (threat model, "Found by the v0.3
+  adversarial review");
+- suite: 1171 passed, 23 field, 38 MCP; `plan` cold start median 177 ms.
 
-In progress: a fresh fail-open reviewer in worktree `/home/user/wt-review` (branch `v03/review`,
-tests only, under `tests/review_v03/`), scoped to waivers, the hook loop and the adapters.
-
-Next:
-1. Merge its tests and fix every confirmed finding.
-2. List the findings in the threat model.
-3. Open the PR `claude/v0.3` → `main` with `gh pr create`, and report the dogfood job result.
-
-Expected dogfood result: UNKNOWN. BASE (main) has no `repomarshal.toml`, so waivers cannot count
-yet.
+Next: the PR `claude/v0.3` → `main` is open (see the PR list). Wait for CI and report the dogfood
+result to the owner. Expected dogfood result: UNKNOWN (exit 2), because BASE (main) has no
+`repomarshal.toml`, so waivers cannot count, and this PR changes test and gate definitions. The
+owner verifies and merges.
 
 ## Upstream repos inspected
 
@@ -111,3 +104,8 @@ yet.
   2 for UNKNOWN and 3 for BLOCKED. SKIPPED, NOT_APPLICABLE and WAIVED are never evidence.
 - **Pulling `main` into this branch uses merge, not rebase.** The branch is already pushed, and
   CLAUDE.md forbids rewriting pushed history.
+- **v0.3 dogfood ordering:** the judge is installed from BASE before any PR code runs, and gate
+  tools come from BASE's dev requirements. A PR build backend could otherwise tamper with git
+  state before the judge reads BASE.
+- **Waivers are read before gates:** gates run PR code as the same user, so nothing the judge
+  trusts is read after the first gate.

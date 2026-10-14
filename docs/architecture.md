@@ -397,7 +397,7 @@ makes sure local files are never the source of truth for a verdict:
 
    An agent that commits directly to the base branch can shift BASE, so every evidence record states
    the BASE it used. The first BASE seen per branch is also remembered in
-   `.repomarshal/state/base.json`. Later automatic resolutions take the merge-base of the
+   `$GIT_DIR/repomarshal/base.json` (v0.3: never in the working tree, so a commit cannot plant it). Later automatic resolutions take the merge-base of the
    remembered and the automatic BASE, so moving a ref can only widen the diff (fail-open review #2).
    Deleting the state only restores plain automatic resolution. An explicit `--base` (CLI or MCP)
    may be agent-supplied, so it can only *widen* the diff (merge-base with that floor) and is
