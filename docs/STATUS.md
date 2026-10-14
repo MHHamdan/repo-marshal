@@ -37,10 +37,24 @@ Contract (committed):
 
 ## Next step
 
-All agents are merged and all 14 field findings are fixed (suite: 1142 passed, 23 field, 38 MCP).
-Next: dedupe runtime gates superseded by the Playwright provider (`providers.superseded`), then run a fresh fail-open
-reviewer on the waivers, the hook loop and the adapters, and open the PR `claude/v0.3` → `main`
-with `gh pr create`. Report the dogfood job result.
+Done on the lead branch:
+- fix-inv is merged;
+- the inventory drops Playwright's duplicate runtime gates;
+- `plan` cold start is back to a median of 177 ms (lazy waiver import, guarded by a test);
+- the field evaluation was re-run after the fixes (`docs/evaluation.md` §9): recall 1.000,
+  precision 0.66 against the frozen judgment and about 0.80 re-judged;
+- the README, roadmap and threat model are updated for v0.3.
+
+In progress: a fresh fail-open reviewer in worktree `/home/user/wt-review` (branch `v03/review`,
+tests only, under `tests/review_v03/`), scoped to waivers, the hook loop and the adapters.
+
+Next:
+1. Merge its tests and fix every confirmed finding.
+2. List the findings in the threat model.
+3. Open the PR `claude/v0.3` → `main` with `gh pr create`, and report the dogfood job result.
+
+Expected dogfood result: UNKNOWN. BASE (main) has no `repomarshal.toml`, so waivers cannot count
+yet.
 
 ## Upstream repos inspected
 
