@@ -19,8 +19,10 @@ v0.3 scope (from the owner):
 |---|---|---|---|---|
 | override | `v03/override` | waivers: `repomarshal waive`, GitHub label/review waivers in CI, dogfood job wiring | `src/repomarshal/waivers.py`, `tests/unit/test_waivers.py`, `.github/workflows/ci.yml`, `docs/guides/ci.md`, `docs/guides/waivers.md` | **merged**; lead hardening: judge installed from BASE in dogfood, CI tokens stripped from gates, CODEOWNERS added |
 | hook-loop | `v03/hook-loop` | allow a stop on a repeated, unchanged non-PASS (with `systemMessage` UNVERIFIED); never on a new or worse verdict | `src/repomarshal/hooks.py`, `tests/unit/test_hooks.py`, `tests/unit/test_hook_loop.py` | **merged** |
+| fix-inv | `v03/fix-inv` | the field findings in the inventory (ruff --no-fix, mypy files, check scripts, packageManager, test:* scripts, Makefile, pytest.ini in tests/, workspace scopes) | `inventory.py`, `tests/unit/test_inventory.py` | in progress |
+| fix-sig | `v03/fix-sig` | the field findings in signals, decisions and context (`dependency.changed`, .test.tsx not UI, `.github/scripts` as CI, integration only with code or specific triggers, lockfiles out of context) | `signals.py`, `decisions.py`, `context.py` and their unit tests | in progress |
 | adapters | `v03/adapters` | SkillSpector (`skill_audit`) and Playwright (`runtime`) providers, plus the `agent.skill_changed` signal | `src/repomarshal/providers/**`, `tests/unit/test_provider_*.py`, the `agent.skill_changed` rule in `signals.py` | in progress |
-| field-test | `v03/field-test` | `plan` / `done --dry-run` on 5 real repositories; findings as fixtures plus failing tests | `docs/evaluation.md`, `tests/field/**`, `tests/fixtures/field/**` | in progress |
+| field-test | `v03/field-test` | `plan` / `done --dry-run` on 5 real repositories; findings as fixtures plus failing tests | `docs/evaluation.md`, `tests/field/**`, `tests/fixtures/field/**` | **merged**: 27 commits on 5 repos, gate precision 0.80, recall 0.94, 14 findings |
 
 Contract (committed):
 - `model.Waiver` / `WaiverSource`, `EvidenceRecord.waivers`, `GateResult.tool` and
