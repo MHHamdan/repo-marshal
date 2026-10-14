@@ -215,6 +215,8 @@ SCRIPT_CONFIG_PREFIXES = (
     "playwright.config.",
     "babel.config.",
     "vite.config.",
+    "vitest.workspace.",  # v0.6 review F3: they decide which projects a root vitest runs
+    "vitest.projects.",
 )
 # Compared semantically by the digest; an edit to them alone (e.g. a dependency bump) is not a
 # definition change even when a command names them.
@@ -781,9 +783,13 @@ def _pnpm_workspace_packages(text: str) -> list[str]:
 
 def _workspace_patterns(tree: _Tree) -> tuple[list[list[str]], list[list[str]]]:
     """(include, exclude) workspace globs of the root, split into path segments."""
+    return _split_globs(_workspace_globs(tree))
+
+
+def _split_globs(globs: list[str]) -> tuple[list[list[str]], list[list[str]]]:
     include: list[list[str]] = []
     exclude: list[list[str]] = []
-    for glob in _workspace_globs(tree):
+    for glob in globs:
         negated = glob.startswith("!")
         glob = glob[1:] if negated else glob
         while glob.startswith("./"):
@@ -833,16 +839,102 @@ def _script_of(tree: _Tree, scope: str, name: str) -> Script | None:
     return Script(name, body, hooks)
 
 
-def _coverage(trees: tuple[_Tree, ...], root: _Candidate, pkg: _Candidate) -> str | None:
+# Files that decide which packages a root run covers, or what it runs there. A change touching any
+# of them voids coverage (both gates stay required): the parsers here model only the plain
+# shapes of these files, so an edit is never trusted to keep the coverage (v0.6 review F1-F5).
+COVERAGE_FILES_ANY_DEPTH = frozenset({"project.json", "turbo.json", "nx.json"})
+COVERAGE_FILES_ROOT = frozenset({"pnpm-workspace.yaml", "lerna.json", ".npmrc", ".yarnrc.yml"})
+COVERAGE_PREFIXES_ROOT = ("vitest.config.", "vitest.workspace.", "vitest.projects.",
+                          "vite.config.", "jest.config.")  # fmt: skip
+# Root package.json keys that cannot change what a script or test runner does.
+INERT_PACKAGE_KEYS = frozenset({
+    "dependencies", "devDependencies", "peerDependencies", "optionalDependencies",
+    "peerDependenciesMeta", "version", "description", "keywords", "author", "contributors",
+    "license", "repository", "bugs", "homepage", "funding", "private",
+})  # fmt: skip
+
+
+def _coverage_files_changed(trees: tuple[_Tree, ...], changed: frozenset[str]) -> str | None:
+    for path in sorted(changed):
+        base = path.rsplit("/", 1)[-1]
+        if base in COVERAGE_FILES_ANY_DEPTH:
+            return path
+        if "/" not in path and (
+            base in COVERAGE_FILES_ROOT or base.startswith(COVERAGE_PREFIXES_ROOT)
+        ):
+            return path
+    if "package.json" in changed and len(trees) == 2:
+        old, new = (t.parsed("package.json", "json") for t in trees)
+        if not isinstance(old, dict) or not isinstance(new, dict):
+            return "package.json"
+        keys = (set(old) | set(new)) - INERT_PACKAGE_KEYS
+        if any(old.get(k) != new.get(k) for k in keys):
+            return "package.json"
+    return None
+
+
+def _in_every_workspace_list(tree: _Tree, directory: str) -> bool:
+    """The package is listed by EVERY workspace file present (package.json `workspaces`,
+    pnpm-workspace.yaml): package managers disagree on which one they read (v0.6 review F1)."""
+    sources: list[list[str]] = []
+    data = tree.parsed("package.json", "json")
+    if isinstance(data, dict) and "workspaces" in data:
+        ws = data.get("workspaces")
+        if isinstance(ws, dict):
+            ws = ws.get("packages")
+        if not isinstance(ws, list) or not all(isinstance(g, str) for g in ws):
+            return False
+        sources.append(ws)
+    raw = tree.read("pnpm-workspace.yaml")
+    if raw is not None:
+        strict = _pnpm_workspace_strict(raw.decode("utf-8", errors="replace"))
+        if strict is None:
+            return False
+        sources.append(strict)
+    if not sources:
+        return False
+    return all(_in_workspace(_split_globs(src), directory) for src in sources)
+
+
+def _pnpm_workspace_strict(text: str) -> list[str] | None:
+    """The `packages:` list only when the file uses the plain shapes _pnpm_workspace_packages
+    models; None for anything else (block scalars, anchors, flow lists over several lines...)."""
+    for line in text.splitlines():
+        code = line.split(" #", 1)[0].rstrip()
+        stripped = code.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # Block scalars, flow mappings, tags, complex keys, anchors and aliases (`&a`, `*a`
+        # at the start of a value; a glob's `*` after `/` is fine) are not modelled.
+        if any(ch in stripped for ch in "|>{}") or stripped.startswith(("? ", "!")):
+            return None
+        if re.search(r"(^|[\s:\[,-])[&*!][A-Za-z0-9_]", stripped):
+            return None
+        if "[" in stripped and not (stripped.endswith("]") and stripped.count("[") == 1):
+            return None
+        if stripped.startswith("-") and not re.fullmatch(r"-\s+\S.*", stripped):
+            return None
+    return _pnpm_workspace_packages(text)
+
+
+def _coverage(
+    trees: tuple[_Tree, ...],
+    root: _Candidate,
+    pkg: _Candidate,
+    changed: frozenset[str] = frozenset(),
+) -> str | None:
     """Evidence (workspace.root_coverage) that the root script gate runs the workspace package
     gate's checks. It must hold in every tree, BASE and the working tree: a change that drops the
-    package from the workspace, or the root script's evidence, keeps both gates."""
+    package from the workspace, or the root script's evidence, keeps both gates. A change to any
+    file that decides coverage voids it."""
+    if _coverage_files_changed(trees, changed) is not None:
+        return None
     directory = pkg.gate.scope[:-1]
     evidence: str | None = None
     for tree in trees:
         if tree.read(pkg.gate.scope + "package.json") is None:
             return None
-        if not _in_workspace(_workspace_patterns(tree), directory):
+        if not _in_every_workspace_list(tree, directory):
             return None
         root_script = _script_of(tree, "", root.gate.argv[-1])
         pkg_script = _script_of(tree, pkg.gate.scope, pkg.gate.argv[-1])
@@ -1020,7 +1112,7 @@ def build_inventory(
             continue
         root = roots.get(gate.kind)
         if root is not None and cand.family == SCRIPT_GATE and gate.scope in workspace:
-            evidence = _coverage((base_tree, work_tree), root, cand)
+            evidence = _coverage((base_tree, work_tree), root, cand, changed_paths)
             if evidence:
                 gate = dataclasses.replace(
                     gate, covered_by=root.gate.id, coverage_evidence=evidence
