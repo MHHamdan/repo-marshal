@@ -41,16 +41,29 @@ threat model priorities.
 - `init`, `doctor`, and the fail-closed Claude Code Stop-hook shim (`done --hook claude-code`).
 - The MCP stdio server as the optional extra `repomarshal[mcp]`.
 
+## Done in v0.3
+
+- **Waivers** from humans only: PR label plus reason comment or an approving CODEOWNER review in CI,
+  `repomarshal waive` at a terminal locally; only for UNKNOWN/UNAVAILABLE, only when the BASE
+  policy sets `completion.waivers_permit_pass`. The dogfood CI job installs its judge from BASE.
+- **Stop-hook loop termination:** a repeated, identical non-PASS verdict is let through with an
+  UNVERIFIED message to the user; a new or worse verdict always blocks.
+- **SkillSpector** (`skill_audit`) and **Playwright** (`runtime`) providers, experimental, with
+  pinned tested ranges and the tool version recorded in evidence.
+- Signals `agent.skill_changed` and `dependency.changed`.
+- Inventory from `Makefile` targets, workspace packages, `packageManager`, `test:*` scripts and
+  non-mutating check scripts.
+- A field evaluation on 27 commits from 5 real repositories (`docs/evaluation.md`).
+
 ## SHOULD: next, in priority order
 
-1. **Remaining catalogue signals:** `agent.skill_changed`, `dependency.changed`, `db.migration`.
-2. **SkillSpector adapter** for `skill_audit` (T9).
-3. **Playwright adapter** for `runtime` (JSON reporter; `expected == 0` → UNKNOWN).
-4. **Inventory from more sources:** `AGENTS.md ## Commands` and `Makefile` targets.
-5. **Evidence hash chain** (`prev_digest`) and a `status` command that reports STALE.
-6. **Waivers:** a recorded reason, governed by `completion.waivers_permit_pass`.
-7. **CI test for the startup budget.**
-8. **Publish to PyPI**, with trusted publishing.
+1. **Evidence hash chain** (`prev_digest`) and a `status` command that reports STALE.
+2. **Workspace-aware gate deduplication:** a root `test` that already runs every package should not
+   also require each package's unit gate (field evaluation §9).
+3. **`db.migration` signal.**
+4. **Inventory from `AGENTS.md ## Commands`.**
+5. **CI test for the startup budget.**
+6. **Publish to PyPI**, with trusted publishing.
 
 ## MAY: after the core is proven
 

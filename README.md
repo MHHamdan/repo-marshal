@@ -8,8 +8,9 @@ which checks this specific change requires. Every check the plan skips comes wit
 RepoMarshal then runs the required checks itself and returns a verdict (PASS, FAIL, UNKNOWN or
 BLOCKED) that never treats "could not check" as "passed".
 
-> Status: **v0.1 development slice.** Local CLI only, Python ≥ 3.11, no runtime dependencies.
-> Not yet published to PyPI.
+> Status: **v0.3 development slice.** CLI, Claude Code hooks, MCP server and a CI recipe;
+> Python ≥ 3.11, no runtime dependencies. Not yet published to PyPI. Measured on 27 commits from
+> 5 real repositories: [`docs/evaluation.md`](docs/evaluation.md).
 
 ## Why not just install the tools?
 
@@ -43,11 +44,20 @@ cd /path/to/your/repo
   - **Stop** runs `repomarshal done --hook claude-code`. Any verdict other than PASS, and any
     error, signal or timeout, blocks the stop. The agent gets the failing or unknown gates as
     feedback.
+  - **No endless loop.** If the agent stops again (`stop_hook_active`) with the *same* non-PASS
+    verdict over the *same* evidence, the stop is allowed and you get a message that the change is
+    **UNVERIFIED**, listing the open gates. A new or worse verdict always blocks again.
 - **Any MCP client:** `pip install "repomarshal[mcp]"`, then register `repomarshal mcp` as a stdio
   server. Tools: `repomarshal_plan`, `repomarshal_done` and `repomarshal_explain`. Each takes an
   explicit `repo_path`.
 - **CI, the authoritative verdict:** see [`docs/guides/ci.md`](docs/guides/ci.md). Run
   `repomarshal done --base <PR base sha>` where the agent cannot write.
+- **Waivers, human only:** when a required gate cannot run, a maintainer can accept the gap for one
+  change: in CI with a `repomarshal-waive:<gate>` PR label plus a reason comment, or an approving
+  CODEOWNER review; locally with `repomarshal waive <gate> --reason ...` at a terminal. A waiver
+  never turns a FAIL into a PASS, counts only when the BASE `repomarshal.toml` sets
+  `[completion] waivers_permit_pass = true`, and is recorded in the evidence. The Stop hook and the
+  MCP server never accept waivers. See [`docs/guides/waivers.md`](docs/guides/waivers.md).
 - **`repomarshal doctor`:** reports the detected gates, the policy, and the optional providers.
   `repomarshal init` writes a commented `repomarshal.toml` and touches nothing else.
 
@@ -113,9 +123,11 @@ argv = ["python", "scripts/smoke.py"]
   `docs.changed`, `frontend.ui`, `security.auth_path`, `security.sensitive_identifier` and
   `build.config_changed`. A file no rule recognises raises `coverage.unclassified`, which *widens*
   the plan instead of shrinking it.
-- **Gates.** These are inferred, on an unconfigured repository, from `package.json` scripts and Python
-  tool config (ruff, mypy, pyright, pytest), per directory scope, plus two native baseline checks:
-  Markdown relative links, and secret patterns in added lines.
+- **Gates.** These are inferred, on an unconfigured repository, from `package.json` scripts (run with
+  the `packageManager` or lockfile's runner, preferring non-mutating `*:check` scripts), Python tool
+  config (ruff without fixing, mypy, pyright, pytest) and Makefile targets, per directory scope and
+  per workspace package. Plus two native baseline checks, Markdown relative links and secret
+  patterns in added lines, and the SkillSpector and Playwright providers when installed.
   - Cheap and standard gates run whenever their scope has code changes.
   - Expensive gates (integration, runtime, a11y, security scans) run only when a signal requires
     them.
@@ -158,21 +170,24 @@ See [`docs/security/threat-model.md`](docs/security/threat-model.md).
 
 | Integration | Status |
 |---|---|
-| Command gates (package.json scripts, ruff, mypy, pyright, pytest, `[gates.*]`) | Supported |
+| Command gates (package.json scripts, Makefile targets, ruff, mypy, pyright, pytest, `[gates.*]`) | Supported |
 | Native docs-links and secrets-diff baseline checks | Supported |
 | Claude Code Stop hook (`repomarshal done --hook claude-code`) | Supported; tested against recorded hook payloads |
 | MCP stdio server (`pip install "repomarshal[mcp]"`, `repomarshal mcp`) | Supported (MCP 2026-07-28, with 2025-11-25 fallback) |
 | Hook and MCP config snippets for Codex, Cursor, Copilot and Gemini (`repomarshal init --print <host>`) | Experimental: printed only, untested on those hosts |
-| NVIDIA SkillSpector (skill audit), Playwright JSON reporter (runtime) | Planned |
+| NVIDIA SkillSpector (`skill_audit` when a skill changes; `skillspector` 2.12.x on PATH, `--no-llm`) | Experimental; tested against v2.12.0 |
+| Playwright (`runtime`, JSON reporter; the project's own `@playwright/test`, `npx --no-install`) | Experimental; tested range 1.50–1.64 |
 | Reticle, AgentProof, Chisel spec reader, UI Skills, UI/UX Pro Max | Planned (optional) |
 
 Planned integrations have no code yet. A required gate without a provider is reported as
-UNAVAILABLE, and the verdict is never PASS.
+UNAVAILABLE, and the verdict is never PASS. Provider versions outside the tested range, zero tests
+run, an incomplete scan, or no network for SkillSpector's OSV lookup all give UNKNOWN, never
+PASS. The tool version is recorded in each gate result.
 
 ## Roadmap
 
-See [`docs/roadmap.md`](docs/roadmap.md). Next up: the remaining catalogue signals, the SkillSpector
-and Playwright adapters, more inventory sources, and evidence chaining.
+See [`docs/roadmap.md`](docs/roadmap.md). Next up: evidence chaining and a `status` command,
+workspace-aware deduplication of monorepo gates, `db.migration`, and publishing to PyPI.
 
 ## Development
 

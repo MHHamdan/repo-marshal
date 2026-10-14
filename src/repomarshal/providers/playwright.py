@@ -36,8 +36,8 @@ Duplicate runtime gates: a scope with a Playwright provider gate may also have t
 script gate `<scope-name>:runtime` (test:e2e / e2e). Both are REQUIRED and both must pass, which
 fails closed but runs the suite twice. The provider gate is preferred: superseded() names the
 script gates that only run `playwright test` (optionally via npx, no further arguments, no
-pre/post hooks), which the inventory can drop when this provider gate exists in the same scope.
-A script that does anything else (extra flags, other commands) is kept: it checks something the
+pre/post hooks); the inventory drops those when this provider gate exists in the same scope,
+unless the script's definition changed in the diff (then it stays, and is UNKNOWN). A script that does anything else (extra flags, other commands) is kept: it checks something the
 provider gate does not.
 """
 

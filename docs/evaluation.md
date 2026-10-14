@@ -25,7 +25,9 @@ test-only changes were planned exactly as judged. The errors cluster in four pla
 changes (no `dependency.changed` signal exists yet), CI-only changes (elevated risk demands
 integration tests that no repository has), `.tsx` test files (treated as UI), and the gate inventory
 (commands that rewrite files, ignore configuration, or use the wrong package manager; monorepo
-packages and Makefiles not read). Each one has a failing reproduction (§6).
+packages and Makefiles not read). Each one has a reproduction (§6). All 14 are fixed in v0.3; §9 re-measures the same 27 cases
+after the fixes (recall 1.000, precision 0.66 against the original judgment, about 0.80 when gates
+the old inventory could not see are counted by the same rules).
 
 ## 2. Method
 
@@ -184,7 +186,7 @@ synthetic `package.json`.
 Each finding has a fixture under `tests/fixtures/field/<case>/` (synthetic files; the fixture
 README names the upstream repository and commits) and a test in
 `tests/field/test_field_findings.py` marked `fieldfinding`, asserting the correct behaviour. All 14
-fail today.
+failed at `9cf7d64`; all 14 pass after the v0.3 fixes (§9).
 
 | Test | What is wrong | Seen in | Suspected root cause |
 |---|---|---|---|
@@ -300,3 +302,45 @@ git -C /tmp/claude-0/field/express checkout -q --detach 3b7e39f
 
 Signals, decisions and context sizes are deterministic and reproduce exactly. Latency varies with
 the machine.
+
+## 9. After the v0.3 fixes
+
+The same 27 cases were re-run on 2026-10-14 with `claude/v0.3` after the fix-inv and fix-sig
+merges (`field_eval.py run` + `score`, same clones, same SHAs). The judgment in `EXPECTED` was
+**not changed**, so this is scored against the original, frozen expectations.
+
+| Metric | `9cf7d64` (before) | after fixes |
+|---|---|---|
+| Recall | 0.944 (68 / 72) | **1.000** (72 / 72): the four `dep_audit` misses are now demanded via `dependency.changed` |
+| Precision, against the frozen judgment | 0.800 (68 / 85) | 0.661 (72 / 109) |
+| Cases selecting an unnecessary expensive gate | 7 / 27 | 6 / 27 |
+| `plan` wall time, 135 runs | median 0.184 s, max 0.281 s | median 0.206 s, max 0.313 s |
+| Context, selected / candidate | 23.2% | 16.6% (lockfiles are no longer full-text context) |
+
+Precision fell because the inventory now finds more of each repository's real checks: of the 37
+"false positives", 15 are format, lint or typecheck gates that the old inventory missed (rich
+`root:format`, zustand `root:lint` / `root:typecheck` / `root:format`) in a scope with a code or
+test change. The stated rule in §2 ("that scope's lint, format, typecheck and unit gates") requires
+them; the frozen judgment does not list them only because they did not exist when it was written.
+Counting those 15 as needed gives a precision of 87 / 109 = **0.80**. The rest are real
+over-selection:
+
+- **Workspace duplicates (8, zod).** Package-scope gates (`packages/zod:unit`, `packages/tsc:lint`,
+  ...) now exist, and a root change requires them too, although the root `test` script already
+  runs the whole workspace. Cost, not safety: the same tests run twice.
+- **Integration on dependency changes (5) and on one elevated change (1).** A deliberate rule
+  (`decisions.py`: integration is demanded for `security.auth_path`, `db.migration` and
+  `dependency.changed`), because an upgraded dependency can break behaviour only an integration
+  test exercises. The judgment disagrees. In these repositories it is UNAVAILABLE, but so is
+  `dep_audit`, so the verdict was already UNKNOWN without it; a maintainer waiver (v0.3) is the
+  way through.
+- **Secrets baseline on lockfile changes (4).** Cheap; kept.
+- **`root:unit` for docs-site content (2, zod)** and `root:format` on a dependency-only change
+  (1, rich).
+
+Latency rose by about 20 ms per plan, mostly from reading workspace packages and Makefiles in the
+larger repositories; the webapp fixture is unchanged (median 177 ms after a lazy import in `api`).
+Zod's gates show as UNAVAILABLE in this re-run only because `nub` (its `packageManager`) is not on
+this machine's PATH; availability does not change which gates are selected. The §5 comparison of
+the inventory against each repository's CI was not redone by hand; each of its 8 findings has a
+passing test.
