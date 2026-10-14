@@ -2,6 +2,7 @@
 
     python tests/field/field_eval.py run   FIELD_DIR OUT_DIR   # plan x5 (timed) + done --dry-run
     python tests/field/field_eval.py score OUT_DIR             # judge against EXPECTED, aggregate
+    python tests/field/field_eval.py score OUT_DIR --adjusted  # ... plus the rule-adjusted score
 
 FIELD_DIR holds the read-only clones (click, rich, express, zustand, zod). `run` checks out each
 case commit detached, passes `--base <commit>^`, and restores each clone's HEAD afterwards. It
@@ -51,6 +52,21 @@ EXPECTED: dict[str, set[str]] = {
 }  # fmt: skip
 EXPENSIVE = {"integration", "runtime", "a11y", "dep_audit", "security_scan", "skill_audit"}
 SELECTED = ("REQUIRED", "UNAVAILABLE")
+
+# Rule-adjusted score (docs/evaluation.md §9, §10). EXPECTED was written against the 9cf7d64
+# inventory, which lacked some real checks (rich `make format-check`, zustand `test:lint`,
+# `test:types`, `test:format`, ...). The §2 judgment rule says a code or test change in a scope
+# needs "that scope's lint, format, typecheck and unit gates", so with `--adjusted` a selected
+# gate that EXPECTED does not list counts as needed when, and only when:
+#   - its kind is format, lint or typecheck (unit is not adjusted: every unit gate the old
+#     inventory could see is in EXPECTED, and a new one, e.g. a workspace package's, is a
+#     duplicate candidate that must be judged, not assumed), and
+#   - a file of the case's code.changed or tests.changed signal lies in the gate's scope (the
+#     root scope "" contains every file).
+# Nothing else changes: EXPECTED itself stays frozen, and FN and the expensive-gate count are
+# computed as without --adjusted. The gate scope comes from the plan's own inventory.
+ADJUSTED_KINDS = {"format", "lint", "typecheck"}
+ADJUSTING_SIGNALS = ("code.changed", "tests.changed")
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -109,16 +125,37 @@ def run(field: Path, out: Path) -> None:
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
 
 
-def score(out: Path) -> None:
+def _scopes(out: Path, c: dict) -> dict[str, str]:
+    """Gate id -> scope, from the case's saved plan."""
+    plan = json.loads((out / f"{c['repo']}-{c['sha'][:7]}.plan.json").read_text())
+    return {g["id"]: g["scope"] for g in plan["inventory"]}
+
+
+def rule_needed(c: dict, scopes: dict[str, str], selected: set[str]) -> set[str]:
+    """Selected gates not in EXPECTED that the §2 rule requires (see ADJUSTED_KINDS)."""
+    changed = {f for sid in ADJUSTING_SIGNALS for f in c["signals"].get(sid, ())}
+    out = set()
+    for gate in selected - EXPECTED[c["sha"][:7]]:
+        scope = scopes.get(gate)
+        if c["kinds"].get(gate) in ADJUSTED_KINDS and scope is not None:
+            if any(f.startswith(scope) for f in changed):
+                out.add(gate)
+    return out
+
+
+def score(out: Path, adjusted: bool = False) -> None:
     summary = json.loads((out / "summary.json").read_text())
     totals: Counter[str] = Counter()
     per_kind: dict[str, Counter[str]] = {}
     unnecessary_expensive = 0
+    rule_adjusted = 0
     for c in summary:
         short, kinds = c["sha"][:7], c["kinds"]
         sel = {g for g, s in c["gates"] if s in SELECTED}
         exp = EXPECTED[short]
         buckets = {"tp": sel & exp, "fp": sel - exp, "fn": exp - sel}
+        adj = rule_needed(c, _scopes(out, c), sel) if adjusted else set()
+        rule_adjusted += len(adj)
         for name, items in buckets.items():
             totals[name] += len(items)
             for item in items:
@@ -129,11 +166,19 @@ def score(out: Path) -> None:
         print(
             f"{c['repo']} {short} risk={c['risk']} selected={sorted(sel)} "
             f"fp={sorted(buckets['fp'])} fn={sorted(buckets['fn'])} unavailable={unavailable} "
-            f"plan_s={c['plan_s']} ctx={c['ctx_selected']}/{c['ctx_candidate']} "
+            + (f"rule_needed={sorted(adj)} " if adjusted else "")
+            + f"plan_s={c['plan_s']} ctx={c['ctx_selected']}/{c['ctx_candidate']} "
             f"dry_run={c['done_verdict']}({c['done_exit']}) would_run={c['would_run']}"
         )
     tp, fp, fn = totals["tp"], totals["fp"], totals["fn"]
     print(f"TP={tp} FP={fp} FN={fn} precision={tp / (tp + fp):.3f} recall={tp / (tp + fn):.3f}")
+    if adjusted:
+        atp, afp = tp + rule_adjusted, fp - rule_adjusted
+        print(
+            f"rule-adjusted: {rule_adjusted} selected format/lint/typecheck gates in a scope "
+            f"with a code or test change counted as needed; TP={atp} FP={afp} "
+            f"precision={atp / (atp + afp):.3f} recall={atp / (atp + fn):.3f}"
+        )
     for kind in sorted(per_kind):
         print(f"  {kind}: {dict(per_kind[kind])}")
     print(f"cases selecting an unnecessary expensive gate: {unnecessary_expensive}/{len(summary)}")
@@ -153,5 +198,7 @@ if __name__ == "__main__":
         run(Path(sys.argv[2]), Path(sys.argv[3]))
     elif sys.argv[1:2] == ["score"] and len(sys.argv) == 3:
         score(Path(sys.argv[2]))
+    elif sys.argv[1:2] == ["score"] and len(sys.argv) == 4 and sys.argv[3] == "--adjusted":
+        score(Path(sys.argv[2]), adjusted=True)
     else:
         sys.exit(__doc__)
