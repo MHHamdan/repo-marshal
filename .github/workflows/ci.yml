@@ -2,6 +2,14 @@ name: ci
 on:
   push:
   pull_request:
+    # labeled/unlabeled: a `repomarshal-waive:<target>` label change re-runs the dogfood verdict.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  pull_request_review:
+    # A CODEOWNER approval can carry waivers; a dismissal must re-run the verdict to revoke them.
+    # These events re-run every job, not only dogfood. That is deliberate: a job skipped by an
+    # `if:` reports success, and a skipped `test` from a review-triggered run would stand in for
+    # a failed or cancelled `test` from the pull_request run on the same commit.
+    types: [submitted, dismissed]
 
 permissions:
   contents: read
@@ -70,10 +78,16 @@ jobs:
 
   dogfood:
     # The authoritative verdict: re-run `repomarshal done` where the coding agent cannot write.
-    # No secrets are used here: the gates execute the PR's own code.
-    if: github.event_name == 'pull_request'
+    # No secrets are used here: the gates execute the PR's own code. The workflow token is
+    # read-only (it lets `--waivers github` read labels, comments and reviews; see
+    # docs/guides/waivers.md) and the gates can see it, so it must never gain write scopes.
+    if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,9 +105,10 @@ jobs:
       - name: repomarshal done
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set +e
-          repomarshal done --base "$BASE_SHA" --json > repomarshal-done.json
+          repomarshal done --base "$BASE_SHA" --waivers github --json > repomarshal-done.json
           code=$?
           set -e
           cat repomarshal-done.json
