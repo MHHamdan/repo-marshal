@@ -20,7 +20,7 @@ Integration methods, in order of preference (MISSION.md §32):
 ## Primary upstream sources
 
 ### NVIDIA/SkillSpector
-- **Commit:** `69d7d059da38160296b2311320ed4c72a9c3fdb6` (2026-10-12; tag v2.12.0 is the latest)
+- **Commit:** `69d7d059da38160296b2311320ed4c72a9c3fdb6` (main, 2026-10-12) was inspected in Phase 1. **Correction (2026-10-14):** tag v2.12.0 is at `c7958a3`, 630 commits earlier; main also reports 2.12.0. The v0.3 adapter is pinned to and tested against the v2.12.0 tag (`c7958a3`), range `>=2.12,<2.13`.
 - **License:** Apache-2.0 (sole `LICENSE`; SPDX headers in source). No NOTICE file. Contributions under DCO. Bundled YARA rule provenance is UNKNOWN.
 - **Studied:** CLI and exit codes, JSON/SARIF contracts, MCP `scan_skill`, offline behaviour (run locally), dependency footprint.
 - **Integration:** CLI subprocess adapter (`scan --no-llm --format json`). Optional, user-installed, never a pip dependency.
@@ -134,6 +134,7 @@ Integration methods, in order of preference (MISSION.md §32):
 - **Code reused:** none.
 
 ### microsoft/playwright
+- **v0.3 adapter:** `@playwright/test` 1.63.0 (npm, released 2026-09-04), JSON reporter; tested range `>=1.50,<1.65`.
 - **Commit:** `a3401cfe0dcf317101572d025fa46248d0779b42` (2026-10-12; package `1.65.0-next`). Shallow, sparse clone, so tags and history were not inspected.
 - **License:** Apache-2.0. NOTICE: Copyright (c) Microsoft Corporation, includes Puppeteer-derived code.
 - **Studied:** JSON reporter types (`types/testReporter.d.ts`), exit codes, `--only-changed`, MCP and agent tooling.

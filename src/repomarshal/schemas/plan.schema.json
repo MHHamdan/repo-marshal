@@ -157,10 +157,8 @@
           "type": "string"
         },
         "provider": {
-          "enum": [
-            "command",
-            "native"
-          ]
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$"
         },
         "available": {
           "type": "boolean"
