@@ -1,0 +1,7 @@
+{
+  "name": "@zod/docs",
+  "private": true,
+  "scripts": {
+    "build": "next build"
+  }
+}

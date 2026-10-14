@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "richlike"
+version = "0.1.0"
+description = "synthetic"
+authors = ["Fixture"]
+
+[tool.poetry.dependencies]
+python = ">=3.9.0"
+
+[tool.mypy]
+files = ["richlike"]
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
