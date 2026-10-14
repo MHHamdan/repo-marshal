@@ -220,7 +220,10 @@ def adjust(d: GateDecision, result: GateResult, before: str, now: str) -> GateRe
 
 
 def collect_waivers(
-    prep: Prepared, waivers: str, env: Mapping[str, str] | None
+    prep: Prepared,
+    waivers: str,
+    env: Mapping[str, str] | None,
+    extra_targets: Mapping[str, tuple[str, ...]] | None = None,
 ) -> tuple[tuple, tuple[str, ...]]:
     """v0.3 human override: only the caller decides where waivers may come from (the hook and
     the MCP server pass "none"); waivers.collect decides which ones are genuine. Call it BEFORE
@@ -231,7 +234,7 @@ def collect_waivers(
         return (), ()
     from repomarshal import waivers as waivers_mod  # lazy: keeps urllib off the `plan` path
 
-    return waivers_mod.collect_report(prep.root, prep.plan, waivers, env)
+    return waivers_mod.collect_report(prep.root, prep.plan, waivers, env, extra_targets)
 
 
 def finish(

@@ -21,6 +21,8 @@ v0.4 split CI (threat T26; behaviour in repomarshal.ci):
     repomarshal ci gate    --base SHA --gate ID --expect JSON --out FILE  exit 0/1/2
     repomarshal ci verdict --base SHA --expect JSON --results DIR [--json]  exit = verdict
     repomarshal ci passed  --result FILE                                    exit 0 iff PASS
+    repomarshal ci trusted-verdict --run-id N --run-attempt N --head-sha SHA --results DIR
+        (v0.5) the default-branch workflow_run judge; exit = verdict
 """
 
 from __future__ import annotations
@@ -104,6 +106,22 @@ def _parser() -> argparse.ArgumentParser:
     cp = cisub.add_parser("plan", help="plan job: the plan, binding data and the gate matrix")
     cg = cisub.add_parser("gate", help="gate job: run one isolated gate, write its raw result")
     cv = cisub.add_parser("verdict", help="verdict job: bind the gate results and fold")
+    ct = cisub.add_parser(
+        "trusted-verdict",
+        help="trusted workflow (workflow_run): verdict for the triggering ci run of a PR",
+    )
+    ct.add_argument("--repo", default=".", help="checkout of the PR head (data only)")
+    ct.add_argument("--run-id", required=True, help="the triggering ci run id")
+    ct.add_argument("--run-attempt", required=True, help="the triggering ci run attempt")
+    ct.add_argument("--head-sha", required=True, help="the triggering run's head SHA")
+    ct.add_argument("--results", required=True, help="directory with rm-gate-<i>/result.json")
+    ct.add_argument("--waivers", choices=["none", "github"], default="github")
+    ct.add_argument("--json", action="store_true", help="machine-readable output")
+    ct.add_argument(
+        "--github-output",
+        action="store_true",
+        help="write the commit status state/description to the file named by $GITHUB_OUTPUT",
+    )
     cpass = cisub.add_parser("passed", help="exit 0 exactly when a gate result file says PASS")
     cpass.add_argument("--result", required=True, help="the gate job's result.json")
     for c in (cp, cg, cv):
@@ -239,6 +257,26 @@ def _ci(args: argparse.Namespace) -> int:
     env = dict(os.environ)
     if args.ci_command == "passed":
         return ci.passed_step(Path(args.result))
+    if args.ci_command == "trusted-verdict":
+        r = ci.trusted_verdict(
+            args.repo,
+            args.run_id,
+            args.run_attempt,
+            args.head_sha,
+            Path(args.results),
+            env,
+            waivers=args.waivers,
+        )
+        state, description = ci.commit_status(r)
+        if args.github_output:
+            target = env.get("GITHUB_OUTPUT")
+            if not target:
+                print("repomarshal ci: GITHUB_OUTPUT is not set", file=sys.stderr)
+                return EXIT_INTERNAL_ERROR
+            with open(target, "a", encoding="utf-8") as f:
+                f.write(f"state={state}\ndescription={description}\n")
+        _print_result(r, args.json)
+        return r.verdict.exit_code
     if args.ci_command == "plan":
         out = ci.plan_step(args.repo, args.base, env, waivers=args.waivers)
         text = json.dumps(out, indent=2, sort_keys=True)
@@ -265,7 +303,12 @@ def _ci(args: argparse.Namespace) -> int:
     r = ci.verdict_step(
         args.repo, args.base, _expect(args.expect), Path(args.results), env, waivers=args.waivers
     )
-    if args.json:
+    _print_result(r, args.json)
+    return r.verdict.exit_code
+
+
+def _print_result(r: api.DoneResult, as_json: bool) -> None:
+    if as_json:
         print(
             json.dumps(
                 {
@@ -279,4 +322,3 @@ def _ci(args: argparse.Namespace) -> int:
         )
     else:
         print(render.done_text(r))
-    return r.verdict.exit_code

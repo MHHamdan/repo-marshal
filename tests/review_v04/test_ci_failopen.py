@@ -73,7 +73,7 @@ def test_forged_unknown_over_a_real_fail_cannot_be_waived_into_pass(tmp_path, mo
     must not become PASS through a waiver."""
     monkeypatch.setattr(split, "POLICY", split.POLICY + PERMIT)
     monkeypatch.setattr(
-        api, "collect_waivers", lambda prep, mode, env: ((_human_waiver("style"),), ())
+        api, "collect_waivers", lambda prep, mode, env, extra=None: ((_human_waiver("style"),), ())
     )
     seen = {}
 

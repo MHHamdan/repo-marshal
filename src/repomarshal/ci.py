@@ -40,7 +40,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
+import tempfile
 import urllib.parse
 from collections.abc import Mapping
 from pathlib import Path
@@ -382,17 +384,25 @@ def verdict_step(
     env: Mapping[str, str],
     waivers: str = "github",
     jobs: JobSteps | None = None,
+    self_bind: bool = False,
+    extra_problems: tuple[str, ...] = (),
+    workflow_changed: bool = False,
 ) -> DoneResult:
     """Fold the isolated gate results into a verdict, on a runner where no PR code ran.
-    `jobs` is for tests; in CI it is read from the Actions API."""
+    `jobs` is for tests; in CI it is read from the Actions API. `self_bind` (the trusted
+    workflow, v0.5): there is no plan-job output to compare with, so the results bind to this
+    job's own plan only, and HEAD must be the PR head itself (no merge commit)."""
     prep = api.prepare(repo, base=base, env=env, remember=False, record=True)
     if isinstance(prep, DoneResult):
         return prep
     root, p = prep.root, prep.plan
-    head, _, problem = head_binding(root, env)
+    head, pr_head, problem = head_binding(root, env)
     mine = _expectation(prep, head)
-    problems: list[str] = [problem] if problem else []
-    if not isinstance(expect, Mapping):
+    problems: list[str] = list(extra_problems) + ([problem] if problem else [])
+    if self_bind:
+        if pr_head is not None and head != pr_head:
+            problems.append(f"checkout {head[:12]} is not the PR head {pr_head[:12]}")
+    elif not isinstance(expect, Mapping):
         problems.append("no plan job output to bind to")
     else:
         problems += [
@@ -400,7 +410,24 @@ def verdict_step(
             for key in ("plan_hash", "head", "tree", "gates")
             if expect.get(key) != mine[key]
         ]
-    granted, notes = api.collect_waivers(prep, waivers, env)
+    extra = {WORKFLOW_WAIVER: (WORKFLOW_PATH,)} if workflow_changed else None
+    granted, notes = api.collect_waivers(prep, waivers, env, extra)
+    if workflow_changed:
+        accepted = [w for w in granted if w.target == WORKFLOW_WAIVER]
+        if WORKFLOW_WAIVER in prep.inventory:  # a BASE gate of that name: never ambiguous
+            accepted = []
+        if accepted and p.policy.waivers_permit_pass:
+            notes = (
+                *notes,
+                f"{WORKFLOW_PATH} change accepted by {accepted[0].identity} "
+                f"({accepted[0].source.value}): {accepted[0].reason}",
+            )
+        else:
+            problems.append(
+                f"the PR changes {WORKFLOW_PATH}, which defines the gate jobs: their records "
+                "cannot be trusted unless a person reviews the change and grants the "
+                f"'{WORKFLOW_WAIVER}' waiver (with BASE waivers_permit_pass)"
+            )
     jobs_problem = None
     if not problems and jobs is None and mine["gates"]:
         jobs, jobs_problem = fetch_job_steps(env)
@@ -434,13 +461,167 @@ def verdict_step(
     return api.finish(prep, results, after, tree_changed, granted, notes, extra, blockers=extra)
 
 
+# --------------------------------------------------------------------------- trusted workflow
+
+WORKFLOW_PATH = ".github/workflows/ci.yml"  # defines the rm-plan / rm-gate jobs
+# A person's statement "I reviewed this PR's change to ci.yml": the only way such a PR can bind.
+WORKFLOW_WAIVER = "ci-workflow"
+STATUS_CONTEXT = "repomarshal/verdict"
+_SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def trusted_verdict(
+    repo: str | Path,
+    run_id: str,
+    run_attempt: str,
+    head_sha: str,
+    results_dir: Path,
+    env: Mapping[str, str],
+    waivers: str = "github",
+    jobs: JobSteps | None = None,
+) -> DoneResult:
+    """The verdict of the trusted workflow (v0.5, threat T31), which GitHub runs from the
+    default branch after the PR's `ci` workflow completes (`workflow_run`). No PR code runs
+    here; `repo` is a checkout of the PR head used as data.
+
+    The gate jobs ran in the PR's `ci` run, whose workflow file the PR could have edited. So the
+    triggering run binds only if all of these hold, otherwise every isolated gate is UNKNOWN:
+    - it is a `pull_request` run of .github/workflows/ci.yml for exactly `head_sha` and attempt
+      `run_attempt`, as the Actions API reports it (not the event payload alone);
+    - exactly one open PR in this repository has `head_sha` as its head right now;
+    - the PR does not change .github/workflows/ci.yml relative to its merge base, so the gate
+      jobs ran the base branch's definition of them. If it does, only a human waiver for the
+      target `ci-workflow` (label and comment, same rules as every waiver, BASE policy
+      waivers_permit_pass) accepts the change; it is listed in the evidence;
+    - the checkout is `head_sha`.
+    A PR that renames or removes the `ci` workflow never triggers this one: the required status
+    then stays missing, which blocks the merge."""
+    from repomarshal import waivers as waivers_mod  # lazy: urllib only on the CI path
+
+    def unknown(why: str) -> DoneResult:
+        return DoneResult(Verdict.UNKNOWN, (f"trusted verdict: {why}",), None, None, None)
+
+    repo_name = env.get("GITHUB_REPOSITORY", "")
+    token = env.get("GITHUB_TOKEN", "")
+    api_url = env.get("GITHUB_API_URL") or waivers_mod.DEFAULT_API_URL
+    if not waivers_mod._REPO_RE.fullmatch(repo_name) or not token:
+        return unknown("GITHUB_REPOSITORY and GITHUB_TOKEN are required")
+    if urllib.parse.urlsplit(api_url).scheme not in ("https", "http"):
+        return unknown(f"GITHUB_API_URL {api_url!r} is not http(s)")
+    if not (_SHA_RE.fullmatch(head_sha) and run_id.isdigit() and run_attempt.isdigit()):
+        return unknown("head SHA, run id and run attempt are required")
+    gh = waivers_mod._GitHub(api_url, token)
+    problems: list[str] = []
+    try:
+        run = gh.get(f"/repos/{repo_name}/actions/runs/{run_id}")
+        if not isinstance(run, dict):
+            return unknown("the Actions API returned no workflow run")
+        path = str(run.get("path") or "").split("@", 1)[0]
+        if path != WORKFLOW_PATH:
+            problems.append(f"the triggering run is {path!r}, not {WORKFLOW_PATH}")
+        if run.get("event") != "pull_request":
+            problems.append(f"the triggering run's event is {run.get('event')!r}")
+        if run.get("head_sha") != head_sha:
+            problems.append("the triggering run is for another commit")
+        if str(run.get("run_attempt")) != run_attempt:
+            problems.append("the triggering run attempt does not match")
+        pulls = gh.get(f"/repos/{repo_name}/commits/{head_sha}/pulls")
+        if not isinstance(pulls, list):
+            return unknown("the commits/pulls API returned no list")
+        mine = [
+            pr
+            for pr in pulls
+            if isinstance(pr, dict)
+            and pr.get("state") == "open"
+            and (pr.get("head") or {}).get("sha") == head_sha
+            and ((pr.get("base") or {}).get("repo") or {}).get("full_name") == repo_name
+        ]
+        if len(mine) != 1:
+            return unknown(f"{len(mine)} open pull requests have {head_sha[:12]} as their head")
+        number = mine[0].get("number")
+        if not isinstance(number, int):
+            return unknown("pull request without a number")
+        pr = gh.get(f"/repos/{repo_name}/pulls/{number}")
+    except waivers_mod._ApiError as e:
+        return unknown(f"GitHub API error: {e}")
+    if not isinstance(pr, dict) or not isinstance(pr.get("base"), dict):
+        return unknown("malformed pull request")
+    base_sha = pr["base"].get("sha")
+    if not isinstance(base_sha, str) or not _SHA_RE.fullmatch(base_sha):
+        return unknown("pull request without a base SHA")
+    if (pr.get("head") or {}).get("sha") != head_sha:
+        problems.append("the PR head moved on since this run; this result is for an old commit")
+
+    root = git.repo_root(repo)
+    if git._git(root, "rev-parse", "HEAD").stdout.strip() != head_sha:
+        problems.append("the checkout is not the PR head")
+    mb = git._git(root, "merge-base", base_sha, head_sha, check=False)
+    if mb.returncode != 0 or not mb.stdout.strip():
+        return unknown("the PR head and its base share no history in this checkout")
+    changed = git._git(
+        root, "diff", "--no-renames", "--name-only", mb.stdout.strip(), head_sha, "--",
+        WORKFLOW_PATH,
+    ).stdout.strip()  # fmt: skip
+
+    # The waiver and binding code read the PR from a pull_request event payload; build one from
+    # the API answer above (trusted), never from the triggering run.
+    event = {
+        "pull_request": {
+            "number": number,
+            "user": pr.get("user"),
+            "head": {"sha": head_sha},
+            "base": {"sha": base_sha},
+        },
+        "repository": {"full_name": repo_name},
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        event_path = Path(tmp) / "event.json"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        env2 = {
+            **env,
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_EVENT_NAME": "pull_request",
+            "GITHUB_EVENT_PATH": str(event_path),
+            "GITHUB_RUN_ID": run_id,
+            "GITHUB_RUN_ATTEMPT": run_attempt,
+        }
+        return verdict_step(
+            root,
+            base_sha,
+            None,
+            results_dir,
+            env2,
+            waivers=waivers,
+            jobs=jobs,
+            self_bind=True,
+            extra_problems=tuple(problems),
+            workflow_changed=bool(changed),
+        )
+
+
+def commit_status(result: DoneResult) -> tuple[str, str]:
+    """(state, description) for the `repomarshal/verdict` commit status. Built from the verdict
+    alone, never from PR-controlled text. Only PASS is `success`."""
+    v = result.verdict
+    if v is Verdict.PASS:
+        return "success", "PASS: every required gate passed (or was waived by a person)"
+    if v is Verdict.FAIL:
+        return "failure", "FAIL: a required gate failed"
+    if v is Verdict.BLOCKED:
+        return "error", "BLOCKED: the base branch policy is invalid"
+    return "error", "UNKNOWN: required gates could not be verified; see the run"
+
+
 __all__ = [
     "SCHEMA",
+    "STATUS_CONTEXT",
     "Verdict",
+    "commit_status",
     "fetch_job_steps",
     "gate_step",
     "head_binding",
     "isolated_gates",
     "plan_step",
+    "trusted_verdict",
     "verdict_step",
 ]

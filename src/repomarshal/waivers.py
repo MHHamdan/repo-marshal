@@ -113,7 +113,11 @@ def collect(
 
 
 def collect_report(
-    repo: Path, plan: Plan, mode: str, env: Mapping[str, str] | None = None
+    repo: Path,
+    plan: Plan,
+    mode: str,
+    env: Mapping[str, str] | None = None,
+    extra_targets: Mapping[str, tuple[str, ...]] | None = None,
 ) -> tuple[tuple[Waiver, ...], tuple[str, ...]]:
     """(genuine waivers, notes). Never raises; any unexpected error yields no waivers."""
     if mode == "none":
@@ -124,7 +128,7 @@ def collect_report(
         if mode == "local":
             found = _collect_local(Path(repo), plan, environ, notes)
         elif mode == "github":
-            found = _collect_github(Path(repo), plan, environ, notes)
+            found = _collect_github(Path(repo), plan, environ, notes, extra_targets)
         else:
             return (), (f"unknown waiver mode {mode!r}; no waivers used",)
     except _ApiError as e:
@@ -542,7 +546,11 @@ def _app_name(obj: Any) -> str:
 
 
 def _collect_github(
-    root: Path, plan: Plan, environ: Mapping[str, str], notes: list[str]
+    root: Path,
+    plan: Plan,
+    environ: Mapping[str, str],
+    notes: list[str],
+    extra_targets: Mapping[str, tuple[str, ...]] | None = None,
 ) -> list[Waiver]:
     if environ.get("GITHUB_ACTIONS", "").lower() != "true":
         notes.append("github waivers are only read inside GitHub Actions; none used")
@@ -583,7 +591,8 @@ def _collect_github(
         notes.append(f"GITHUB_API_URL {api_url!r} is not http(s); none used")
         return []
 
-    targets = _targets(plan)
+    # extra_targets (v0.5): binding exceptions the trusted CI judge may accept, e.g. ci-workflow.
+    targets = {**_targets(plan), **(extra_targets or {})}
     owners = CodeOwners.at_base(root, plan.change.base)
     gh = _GitHub(api_url, token)
     out: list[Waiver] = []
