@@ -77,7 +77,57 @@ reasons, and the record. Upload both as a build artifact so a reviewer can see w
 which tree digest and BASE, without re-running it. Upload with `if: always()`: the evidence matters
 most when the verdict is not PASS. Evidence is an audit trail; it is never an input to a verdict.
 
-## 6. GitHub Actions example
+## 6. Waivers
+
+When a required gate cannot run (UNAVAILABLE or UNKNOWN), a maintainer can accept the gap for one
+pull request with a waiver. The full rules are in [waivers.md](waivers.md); in short:
+
+- **Grant:** a `repomarshal-waive:<target>` label applied by a CODEOWNER or an admin/maintainer,
+  plus a PR comment by the same person with a line `repomarshal-waive <target>: <reason>`; or an
+  approving CODEOWNER review of the current head commit whose body has that line. Never the PR
+  author, never a bot. CODEOWNERS is read at BASE.
+- **Counts only if BASE permits:** `[completion] waivers_permit_pass = true` in `repomarshal.toml`
+  on the base branch. Otherwise a waived gate stays UNKNOWN.
+- **Never waivable:** a FAIL, a tree that changed during the run, opaque content, "nothing was
+  verified".
+- **Fail closed:** any GitHub API or network error means no waivers for that run.
+- **Local waiver files are ignored in CI.** `repomarshal waive` is for a human at a terminal.
+
+To enable it, run `done --waivers github` and give that job (only) a read-only token for pull
+requests and issues, and re-run it when labels or reviews change:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed]
+jobs:
+  done:
+    permissions:
+      contents: read
+      pull-requests: read   # reviews
+      issues: read          # label events and PR comments
+    steps:
+      # ... checkout, install, as in the example below ...
+      - name: repomarshal done
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: repomarshal done --base "$BASE_SHA" --waivers github --json > repomarshal-done.json
+```
+
+Notes:
+
+- The gates run the PR's code in the same job and can read `GITHUB_TOKEN`. That is why it must
+  stay read-only: never add write scopes (or `pull_request_target`) to this job.
+- `pull_request_review` and label events re-run every job of the workflow, not just this one. Do
+  not skip the other jobs with `if:` on those events: a skipped job reports success, and it would
+  stand in for a failed or cancelled run of the same check on the same commit. This repository's
+  `ci.yml` accepts the extra runs for that reason.
+- Pass the base SHA through `env`, as above, rather than interpolating `${{ }}` into the script.
+
+## 7. GitHub Actions example
 
 Pin actions by full commit SHA. The SHAs below are the ones this repository uses; re-resolve them
 with `git ls-remote https://github.com/<owner>/<repo>.git 'refs/tags/<tag>*'` (for an annotated tag,
@@ -131,7 +181,7 @@ RepoMarshal is not yet on PyPI, so install it from a pinned commit (or a wheel y
 the SHA through `env` rather than interpolating `${{ }}` into the script is a habit worth keeping,
 even for a SHA.
 
-## 7. Other CI systems
+## 8. Other CI systems
 
 The recipe is the same everywhere: full history, an explicit BASE from the platform (not from the
 repository), tools installed, the exit code respected, evidence kept, no secrets.
