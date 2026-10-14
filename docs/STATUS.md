@@ -44,10 +44,19 @@ All v0.3 work is integrated on `claude/v0.3`:
   adversarial review");
 - suite: 1171 passed, 23 field, 38 MCP; `plan` cold start median 177 ms.
 
-Next: the PR `claude/v0.3` → `main` is open (see the PR list). Wait for CI and report the dogfood
-result to the owner. Expected dogfood result: UNKNOWN (exit 2), because BASE (main) has no
-`repomarshal.toml`, so waivers cannot count, and this PR changes test and gate definitions. The
-owner verifies and merges.
+PR #1 (`claude/v0.3` → `main`) is open, and its CI results at `54c673e` are:
+- test 3.11/3.12/3.13, lint, mcp and commit-identity: green;
+- dogfood: exit 2 (UNKNOWN), as expected, judged by the v0.2 judge from main:
+  - `root:unit` passed (exit 0), but its definition changed in this PR (conftest files), so it
+    is UNKNOWN (M14);
+  - integration, runtime and a11y were required but unavailable.
+
+The first dogfood run, at `f76d96e`, was FAIL: the secrets baseline correctly flagged a fake
+`GITHUB_TOKEN="ghs_…"` in a review test. The fake was shortened in `54c673e`.
+
+Next: the owner verifies and merges. After the merge, main carries `repomarshal.toml`
+(`waivers_permit_pass = true`) and the v0.3 judge, so later PRs can reach PASS through a
+maintainer waiver label, never on their own.
 
 ## Upstream repos inspected
 
