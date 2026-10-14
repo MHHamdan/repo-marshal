@@ -1,0 +1,10 @@
+lockfileVersion: '9.0'
+importers:
+  packages/docs:
+    dependencies:
+      next:
+        specifier: 15.5.25
+  packages/integration:
+    dependencies:
+      zod:
+        specifier: 4.6.4

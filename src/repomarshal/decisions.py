@@ -28,10 +28,24 @@ Implementation notes (precisions within the contract):
   task.* and WIDENING signals, which trigger every scope.
 - Integration (field test, docs/evaluation.md): elevated risk on its own does not demand
   integration tests, which cannot verify a CI, agent-config or policy edit. Integration is needed
-  for security.auth_path, db.migration or dependency.changed (and their task.* analogues); for a
-  test-tamper signal (every scope, as for widening); or when risk is elevated AND code.changed
-  fires, scoped to the code.changed files. CI/agent/policy edits alone still widen the cheap and
-  standard gates and still require the secrets gate.
+  for security.auth_path or db.migration (and task.security / task.data); for a test-tamper
+  signal (every scope, as for widening); or when risk is elevated AND code.changed fires, scoped
+  to the code.changed files. CI/agent/policy edits alone still widen the cheap and standard gates
+  and still require the secrets gate.
+- v0.6: dependency.changed (and task.dependencies) no longer demands integration on its own; it
+  still demands unit (by widening) and dep_audit. A dependency bump together with an auth path, a
+  migration, a tamper signal or elevated risk with code still gets integration through those.
+- v0.6 secrets: dependency.changed does not trigger the secrets gate when every file of the
+  change that raised it is a lockfile (signals.is_pure_lockfile, both ends of a rename) whose
+  added lines are fully visible and carry no credential-bearing URL (`scheme://user:pass@`).
+  A manifest (package.json, pyproject.toml, requirements*.txt, ...) still triggers it, and so do
+  security.*, agent.config_changed, task.* and elevated risk. The SECRETS decision then names the
+  skipped trigger in an extra reason.
+- v0.6 workspace coverage (architecture §3.5): a REQUIRED or UNAVAILABLE workspace package gate
+  whose Gate.covered_by names a root gate of the same kind that is itself REQUIRED or UNAVAILABLE
+  becomes SKIPPED "covered by <root>: <evidence>", and the root decision gets a reason listing
+  the packages it covers. A package gate whose definition changed in this change stays, so the
+  M14 UNKNOWN is not lost.
 - task.* triggers (TASK_TRIGGERS below) map task domains onto kinds; they can only add a
   trigger, so task text can never remove a requirement (threat T8).
 
@@ -49,13 +63,16 @@ not counted.
 from __future__ import annotations
 
 import dataclasses
+import re
 from dataclasses import dataclass
 
 from repomarshal.model import (
     KIND_ORDER,
     WHEN_CONFIGURED,
+    ChangedFile,
     ChangeSet,
     DecisionStatus,
+    FileStatus,
     Gate,
     GateDecision,
     GateKind,
@@ -65,7 +82,7 @@ from repomarshal.model import (
     Signal,
     max_risk,
 )
-from repomarshal.signals import TAMPER_SIGNALS, WIDENING, tamper_notes
+from repomarshal.signals import TAMPER_SIGNALS, WIDENING, is_pure_lockfile, tamper_notes
 
 # Kinds whose gates are widened to every scope by a WIDENING signal.
 WIDENED_KINDS: frozenset[GateKind] = frozenset(
@@ -80,6 +97,10 @@ TAINT_SUFFIX = "this gate's result cannot vouch for the change"
 TAINTED_STATUSES: frozenset[DecisionStatus] = frozenset(
     {DecisionStatus.REQUIRED, DecisionStatus.UNAVAILABLE}
 )
+SELECTED: frozenset[DecisionStatus] = TAINTED_STATUSES
+
+# A URL carrying credentials (`https://user:token@host/...`) in an added lockfile line.
+_CREDENTIAL_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@")
 
 # Diff signals that trigger each kind (files-scoped triggers).
 DIFF_TRIGGERS: dict[GateKind, tuple[str, ...]] = {
@@ -88,7 +109,7 @@ DIFF_TRIGGERS: dict[GateKind, tuple[str, ...]] = {
     GateKind.LINT: ("code.changed", "tests.changed"),
     GateKind.TYPECHECK: ("code.changed", "tests.changed"),
     GateKind.UNIT: ("code.changed", "tests.changed"),
-    GateKind.INTEGRATION: ("security.auth_path", "db.migration", "dependency.changed"),
+    GateKind.INTEGRATION: ("security.auth_path", "db.migration"),
     GateKind.SECRETS: ("dependency.changed", "agent.config_changed"),  # + security.*, risk
     GateKind.DEP_AUDIT: ("dependency.changed",),
     GateKind.SECURITY_SCAN: ("security.auth_path",),
@@ -101,7 +122,7 @@ DIFF_TRIGGERS: dict[GateKind, tuple[str, ...]] = {
 TASK_TRIGGERS: dict[GateKind, tuple[str, ...]] = {
     GateKind.DOCS: ("task.docs",),
     GateKind.UNIT: ("task.tests",),
-    GateKind.INTEGRATION: ("task.data", "task.dependencies", "task.security"),  # + elevated+code
+    GateKind.INTEGRATION: ("task.data", "task.security"),  # + elevated+code
     GateKind.SECRETS: ("task.security", "task.dependencies"),
     GateKind.DEP_AUDIT: ("task.dependencies",),
     GateKind.SECURITY_SCAN: ("task.security",),
@@ -117,8 +138,8 @@ NOT_NEEDED: dict[GateKind, str] = {
     GateKind.TYPECHECK: "no code.changed or tests.changed signal",
     GateKind.UNIT: "no code.changed or tests.changed signal",
     GateKind.INTEGRATION: (
-        "no security.auth_path, db.migration, dependency.changed or test-tamper signal, and no "
-        "code.changed under elevated risk"
+        "no security.auth_path, db.migration or test-tamper signal, and no code.changed under "
+        "elevated risk"
     ),
     GateKind.SECRETS: (
         "risk is not elevated and no security.*, dependency.changed or agent.config_changed signal"
@@ -299,6 +320,85 @@ def _decide_kind(kind: GateKind, gates: list[Gate], triggers: list[_Trigger]) ->
     return out
 
 
+def _lockfile_only(dep: Signal, change: ChangeSet) -> tuple[str, ...]:
+    """The lockfiles behind dependency.changed when it comes from lockfiles alone (see the module
+    doc); () when any of its files is a manifest, cannot be matched to the change set, or has
+    added lines that are hidden or carry a credential-bearing URL."""
+    files = frozenset(dep.files)
+    involved: list[ChangedFile] = [
+        f
+        for f in change.files
+        if f.path in files or (f.old_path is not None and f.old_path in files)
+    ]
+    seen = {p for f in involved for p in (f.path, f.old_path) if p is not None}
+    if not involved or not files <= seen:
+        return ()
+    for f in involved:
+        if not all(is_pure_lockfile(p) for p in (f.path, f.old_path) if p is not None):
+            return ()
+        if f.status is not FileStatus.DELETED and (f.binary or f.truncated):
+            return ()
+        if any(_CREDENTIAL_URL.search(line) for line in f.added):
+            return ()
+    return tuple(sorted(files))
+
+
+def _secrets_exemption(
+    triggers: list[_Trigger], by_id: dict[str, Signal], change: ChangeSet
+) -> tuple[list[_Trigger], Reason | None]:
+    """Drop the dependency.changed trigger of the secrets gate for a lockfile-only change."""
+    dep = by_id.get("dependency.changed")
+    if dep is None or not any(t.signal == dep.id for t in triggers):
+        return triggers, None
+    locks = _lockfile_only(dep, change)
+    if not locks:
+        return triggers, None
+    shown = ", ".join(locks[:5]) + (f" (+{len(locks) - 5} more)" if len(locks) > 5 else "")
+    note = Reason(
+        f"dependency.changed comes only from lockfiles ({shown}) with fully visible added lines "
+        "and no credential-bearing URL; a lockfile-only change does not require secrets",
+        dep.id,
+    )
+    return [t for t in triggers if t.signal != dep.id], note
+
+
+def _apply_coverage(decisions: list[GateDecision], gates: dict[str, Gate]) -> list[GateDecision]:
+    """Workspace coverage (module doc): skip a package gate whose covering root gate is selected."""
+    status = {d.gate_id: d.status for d in decisions if d.gate_id and d.status in SELECTED}
+    covered: dict[str, list[str]] = {}
+    out: list[GateDecision] = []
+    for d in decisions:
+        g = gates.get(d.gate_id) if d.gate_id else None
+        root = g.covered_by if g is not None else None
+        if (
+            g is not None
+            and root is not None
+            and root != g.id
+            and d.status in SELECTED
+            and root in status
+            and not g.definition_changed
+        ):
+            covered.setdefault(root, []).append(g.id)
+            text = (
+                f"covered by {root} ({str(status[root]).lower()}): {g.coverage_evidence}; "
+                "its checks run once, at the root"
+            )
+            d = GateDecision(d.kind, DecisionStatus.SKIPPED, (Reason(text),), g.id)
+        out.append(d)
+    if not covered:
+        return out
+    return [
+        dataclasses.replace(
+            d,
+            reasons=d.reasons
+            + (Reason(f"also covers the workspace package gates {', '.join(covered[d.gate_id])}"),),
+        )
+        if d.gate_id in covered
+        else d
+        for d in out
+    ]
+
+
 def _taint(g: Gate, tamper: list[Signal]) -> tuple[Reason, ...]:
     out: list[Reason] = []
     for s in tamper:
@@ -332,8 +432,16 @@ def decide_gates(
     """Deterministic gate decisions; see module docstring."""
     by_id = {s.id: s for s in sorted(signals, key=lambda s: s.id)}
     risk = assess_risk(signals)
+    by_gate = {g.id: g for g in inventory.gates}
     out: list[GateDecision] = []
     for kind in KIND_ORDER:
         gates = sorted((g for g in inventory.gates if g.kind == kind), key=lambda g: g.id)
-        out.extend(_decide_kind(kind, gates, _triggers(kind, by_id, risk)))
-    return tuple(_with_taint(out, {g.id: g for g in inventory.gates}, by_id))
+        triggers = _triggers(kind, by_id, risk)
+        note = None
+        if kind is GateKind.SECRETS:
+            triggers, note = _secrets_exemption(triggers, by_id, change)
+        decided = _apply_coverage(_decide_kind(kind, gates, triggers), by_gate)
+        if note is not None and not triggers:
+            decided = [dataclasses.replace(d, reasons=(note,)) for d in decided]
+        out.extend(decided)
+    return tuple(_with_taint(out, by_gate, by_id))

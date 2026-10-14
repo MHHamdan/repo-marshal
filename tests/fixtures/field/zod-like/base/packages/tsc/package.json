@@ -1,0 +1,8 @@
+{
+  "name": "@zod/tsc-perftest",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "lint": "tslint -c tslint.json src/**/*.ts"
+  }
+}

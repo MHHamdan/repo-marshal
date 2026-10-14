@@ -316,13 +316,74 @@ def test_tamper_signal_requires_integration():
     assert d.status is REQ and d.reasons[0].signal == "tests.deleted"
 
 
-def test_dependency_change_requires_integration_secrets_and_dep_audit():
-    _, decisions = plan(change(mod("backend/uv.lock")))
+def test_lockfile_only_change_requires_unit_and_dep_audit_only():
+    # v0.6 (docs/evaluation.md §10): a dependency bump alone does not demand integration, and a
+    # lockfile-only change does not demand the secrets baseline.
+    _, decisions = plan(change(mod("backend/uv.lock", 'version = "2.1.0"')))
     g, k = by_gate(decisions), kind_level(decisions)
-    assert g["backend:integration"].status is REQ
-    assert g["native:secrets-diff"].status is REQ
+    assert g["backend:integration"].status is SKIP
     assert k[K.DEP_AUDIT].status is UNAV
     assert g["frontend:unit"].status is REQ  # dependency.changed widens
+    assert g["backend:unit"].status is REQ
+    secrets = g["native:secrets-diff"]
+    assert secrets.status is SKIP
+    assert secrets.reasons[0].signal == "dependency.changed"
+    assert secrets.reasons[0].text.startswith(
+        "dependency.changed comes only from lockfiles (backend/uv.lock)"
+    )
+    assert "does not require secrets" in secrets.reasons[0].text
+
+
+def test_manifest_dependency_change_still_requires_secrets_but_not_integration():
+    # The manifest cannot be read at BASE here, so dependency.changed fires (fail closed).
+    for manifest in ("frontend/package.json", "backend/pyproject.toml", "backend/requirements.txt"):
+        signals, decisions = plan(change(mod(manifest, "requests==2.32.0"), mod("backend/uv.lock")))
+        assert "dependency.changed" in {s.id for s in signals}, manifest
+        g = by_gate(decisions)
+        assert g["native:secrets-diff"].status is REQ, manifest
+        assert g["native:secrets-diff"].reasons[0].signal == "dependency.changed"
+        # (an unreadable package.json also fires tests.discovery_narrowed, which does demand it)
+        integration = {r.signal for r in g["backend:integration"].reasons}
+        assert "dependency.changed" not in integration, manifest
+        assert kind_level(decisions)[K.DEP_AUDIT].status is UNAV
+
+
+def test_lockfile_change_keeps_secrets_when_its_added_lines_are_not_clean():
+    hidden = (
+        ChangedFile("frontend/bun.lockb", FileStatus.MODIFIED, binary=True),
+        ChangedFile("backend/uv.lock", FileStatus.MODIFIED, added=("x",), truncated=True),
+        mod("frontend/package-lock.json", '"resolved": "https://ci:s3cr3t@registry.example/x.tgz"'),
+        # a rename from a manifest is not lockfile-only
+        ChangedFile("frontend/yarn.lock", FileStatus.RENAMED, old_path="frontend/package.json"),
+    )
+    for f in hidden:
+        g = by_gate(plan(change(f))[1])
+        assert g["native:secrets-diff"].status is REQ, f.path
+        assert g["backend:integration"].status is SKIP, f.path
+
+
+def test_lockfile_change_with_other_secrets_triggers_still_requires_secrets():
+    for other in (
+        mod("backend/app/auth/refresh.py", "x = 1"),  # security.auth_path (elevated)
+        mod("AGENTS.md", "- Test: `make test`"),  # agent.config_changed
+        mod(".github/workflows/ci.yml", "on: push"),  # ci.changed (elevated)
+        mod("backend/app/api/routes.py", "password = form['p']"),  # sensitive identifier
+    ):
+        d = by_gate(plan(change(mod("backend/uv.lock"), other))[1])["native:secrets-diff"]
+        assert d.status is REQ, other.path
+        assert "dependency.changed" not in {r.signal for r in d.reasons}, other.path
+    # auth path + lockfile: integration through security.auth_path, not the dependency
+    d = by_gate(plan(change(mod("backend/uv.lock"), mod("backend/app/auth/refresh.py")))[1])
+    assert d["backend:integration"].status is REQ
+    assert {r.signal for r in d["backend:integration"].reasons} == {"security.auth_path"}
+
+
+def test_dependency_task_no_longer_requires_integration():
+    _, decisions = plan(change(), task="bump the dependencies")
+    g, k = by_gate(decisions), kind_level(decisions)
+    assert g["backend:integration"].status is SKIP
+    assert g["native:secrets-diff"].status is REQ  # task text is never exempted
+    assert k[K.DEP_AUDIT].status is UNAV
 
 
 # --------------------------------------------------------------------------- task text (T8)
@@ -579,3 +640,69 @@ def test_taint_is_deterministic_and_invariants_hold():
     _check_invariants(a, WITH_ROOT)
     root = by_gate(a)["root:unit"]
     assert [t.signal for t in root.taint] == ["tests.deleted", "tests.skip_added"]
+
+
+# --------------------------------------------------------------------------- workspace coverage
+
+
+def _mono(root_available: bool = True, a_changed_def: bool = False) -> Inventory:
+    evidence = "root vitest reads vitest.config.ts projects, which include packages/a"
+    return Inventory(
+        gates=(
+            gate("root:unit", K.UNIT, "", ("pnpm", "run", "test"), available=root_available),
+            gate(
+                "packages/a:unit",
+                K.UNIT,
+                "packages/a/",
+                ("pnpm", "run", "test"),
+                covered_by="root:unit",
+                coverage_evidence=evidence,
+                definition_changed=a_changed_def,
+            ),
+            gate("packages/b:unit", K.UNIT, "packages/b/", ("pnpm", "run", "test")),
+            *native_gates(),
+        ),
+        scopes=("", "packages/a/", "packages/b/"),
+    )
+
+
+def test_covered_package_gate_is_skipped_in_favour_of_the_root_gate():
+    inv = _mono()
+    _, decisions = plan(change(mod("packages/a/src/x.ts", "export const x = 1")), inv)
+    _check_invariants(decisions, inv)
+    g = by_gate(decisions)
+    assert g["root:unit"].status is REQ
+    assert g["root:unit"].reasons[-1].text == (
+        "also covers the workspace package gates packages/a:unit"
+    )
+    a = g["packages/a:unit"]
+    assert a.status is SKIP
+    assert a.reasons[0].text == (
+        "covered by root:unit (required): root vitest reads vitest.config.ts projects, which "
+        "include packages/a; its checks run once, at the root"
+    )
+    assert g["packages/b:unit"].status is SKIP  # not relevant
+    # widening: the uncovered package still runs, the covered one does not run twice
+    g = by_gate(plan(change(mod("backend/uv.lock")), inv)[1])
+    assert (g["root:unit"].status, g["packages/a:unit"].status) == (REQ, SKIP)
+    assert g["packages/b:unit"].status is REQ
+
+
+def test_unavailable_root_gate_still_covers():
+    g = by_gate(plan(change(mod("packages/a/src/x.ts")), _mono(root_available=False))[1])
+    assert g["root:unit"].status is UNAV
+    assert g["packages/a:unit"].status is SKIP
+    assert g["packages/a:unit"].reasons[0].text.startswith("covered by root:unit (unavailable)")
+
+
+def test_package_gate_with_changed_definition_is_not_covered():
+    # M14: its UNKNOWN must surface, so it keeps running next to the root gate.
+    g = by_gate(plan(change(mod("packages/a/src/x.ts")), _mono(a_changed_def=True))[1])
+    assert (g["root:unit"].status, g["packages/a:unit"].status) == (REQ, REQ)
+    assert len(g["root:unit"].reasons) == 1
+
+
+def test_coverage_names_a_gate_that_is_not_in_the_plan():
+    inv = Inventory(tuple(x for x in _mono().gates if x.id != "root:unit"), ("packages/a/",))
+    g = by_gate(plan(change(mod("packages/a/src/x.ts")), inv)[1])
+    assert g["packages/a:unit"].status is REQ

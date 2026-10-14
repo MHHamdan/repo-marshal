@@ -206,6 +206,10 @@ class Gate:
     # M14: digest of the gate's definition at BASE, and whether the working tree differs.
     definition_digest: str | None = None
     definition_changed: bool = False
+    # v0.6 (architecture §3.5): the root gate of the same kind that already runs this workspace
+    # package gate's checks, and the evidence for it (read at BASE, confirmed in the worktree).
+    covered_by: str | None = None
+    coverage_evidence: str | None = None
 
     def covers(self, path: str) -> bool:
         return self.scope == "" or path.startswith(self.scope)

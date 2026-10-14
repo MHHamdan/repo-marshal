@@ -1031,3 +1031,73 @@ def test_workspace_negation_and_immediate_subdirectories(tmp_path, bin_dir):
         repo.write(f"{d}/package.json", _package_json({"test": "jest"}))
     base = repo.commit()
     assert _inv(repo, base, bin_dir).scopes == ("", "packages/a/", "tools/", "web/")
+
+
+# ------------------------------------------------------------------- workspace coverage (v0.6)
+
+VITEST_ROOT_CONFIG = 'export default { test: { projects: ["packages/*"] } };\n'
+
+
+def _monorepo(tmp_path, root_scripts: dict, vitest_config: str | None = VITEST_ROOT_CONFIG):
+    repo = GitRepo(tmp_path / "mono")
+    repo.write(
+        "package.json",
+        json.dumps({"workspaces": ["packages/*"], "packageManager": "pnpm@9.1.0",
+                    "scripts": root_scripts}),
+    )  # fmt: skip
+    if vitest_config is not None:
+        repo.write("vitest.config.ts", vitest_config)
+    repo.write("packages/a/package.json", _package_json({"test": "vitest run", "lint": "eslint ."}))
+    repo.write("packages/b/package.json", _package_json({"test": "vitest run --typecheck"}))
+    repo.write("tools/package.json", _package_json({"test": "vitest run"}))  # not a workspace
+    return repo, repo.commit()
+
+
+def test_root_vitest_projects_cover_bare_vitest_workspace_packages(tmp_path, bin_dir):
+    repo, base = _monorepo(tmp_path, {"test": "vitest run", "lint": "eslint ."})
+    g = _by_id(_inv(repo, base, bin_dir))
+    assert g["packages/a:unit"].covered_by == "root:unit"
+    assert g["packages/a:unit"].coverage_evidence == (
+        "root vitest reads vitest.config.ts projects, which include packages/a"
+    )
+    # extra options: the root run is not the same check
+    assert g["packages/b:unit"].covered_by is None
+    # not a workspace package: no root runner reaches it
+    assert g["tools:unit"].covered_by is None
+    # a root `eslint .` is not evidence for the package lint script
+    assert g["packages/a:lint"].covered_by is None
+    assert g["root:unit"].covered_by is None
+
+
+def test_no_root_evidence_keeps_package_gates(tmp_path, bin_dir):
+    repo, base = _monorepo(tmp_path, {"test": "vitest run"}, vitest_config=None)
+    assert all(g.covered_by is None for g in _inv(repo, base, bin_dir).gates)
+
+
+def test_recursive_root_script_covers_the_same_script_name(tmp_path, bin_dir):
+    repo, base = _monorepo(tmp_path, {"lint": "pnpm -r lint", "test": "pnpm -r --filter a test"})
+    g = _by_id(_inv(repo, base, bin_dir))
+    assert g["packages/a:lint"].covered_by == "root:lint"
+    assert "runs 'lint' in every workspace package (pnpm -r lint)" in (
+        g["packages/a:lint"].coverage_evidence or ""
+    )
+    assert g["packages/a:unit"].covered_by is None  # --filter narrows the run
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda r: r.write("vitest.config.ts", "export default { test: {} };\n"),
+        lambda r: r.delete("vitest.config.ts"),
+        lambda r: r.write(
+            "package.json",
+            json.dumps({"workspaces": ["packages/b"], "scripts": {"test": "vitest run"}}),
+        ),
+        lambda r: r.write("packages/a/package.json", _package_json({"test": "vitest run -t x"})),
+    ],
+    ids=["projects-dropped", "config-deleted", "left-the-workspace", "package-script-changed"],
+)
+def test_coverage_must_also_hold_in_the_working_tree(tmp_path, bin_dir, edit):
+    repo, base = _monorepo(tmp_path, {"test": "vitest run"})
+    edit(repo)
+    assert _by_id(_inv(repo, base, bin_dir))["packages/a:unit"].covered_by is None
