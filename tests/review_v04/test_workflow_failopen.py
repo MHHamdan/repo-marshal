@@ -165,9 +165,13 @@ def test_python_m_puts_the_working_directory_first_on_sys_path(tmp_path):
     (tmp_path / "pip").mkdir()
     (tmp_path / "pip" / "__init__.py").write_text("")
     (tmp_path / "pip" / "__main__.py").write_text("print('planted pip')\n")
+    # Without PYTHONSAFEPATH, as on a CI runner (RepoMarshal's gates set it, so this test must
+    # clear it to observe the default behaviour).
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"}
     out = subprocess.run(
         [sys.executable, "-m", "pip", "--version"],
         cwd=tmp_path,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -176,6 +180,7 @@ def test_python_m_puts_the_working_directory_first_on_sys_path(tmp_path):
     isolated = subprocess.run(
         [sys.executable, "-I", "-m", "pip", "--version"],
         cwd=tmp_path,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
