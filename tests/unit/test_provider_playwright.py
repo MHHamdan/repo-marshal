@@ -388,9 +388,11 @@ def test_superseded_script_gates(tmp_path):
     from repomarshal.model import Policy
 
     inv = inventory.build_inventory(r.root, base, Policy(), path_env=None)
-    dropped = providers.superseded(r.root, base, inv.gates)
-    assert dropped == {"web:runtime", "app:runtime"}
     ids = {g.id for g in inv.gates}
+    # the inventory drops the plain `playwright test` script gates the provider replaces
+    assert not ids & {"web:runtime", "app:runtime"}
+    assert {"web:runtime-playwright", "app:runtime-playwright"} <= ids
+    assert providers.superseded(r.root, base, inv.gates) == frozenset()
     assert {"flags:runtime", "flags:runtime-playwright", "hook:runtime", "cy:runtime"} <= ids
     assert "cy:runtime-playwright" not in ids  # no config, no @playwright/test: no provider gate
 
@@ -474,3 +476,23 @@ def test_real_playwright_through_done(tmp_path):
     (res,) = [x for x in result.record.results if x.gate_id == "web:runtime-playwright"]
     assert res.status is ResultStatus.FAIL and res.tool.startswith("playwright ")
     assert result.verdict.value == "FAIL"
+
+
+def test_superseded_gate_kept_when_its_definition_changed(tmp_path):
+    """Dropping a duplicate must not hide an edit to it: `"test:e2e": "exit 0"` stays a gate
+    with definition_changed, so its result is UNKNOWN."""
+    r, base = _repo(
+        tmp_path,
+        {
+            "web/package.json": json.dumps({**PKG, "scripts": {"test:e2e": "playwright test"}}),
+            "web/playwright.config.ts": CONFIG,
+        },
+    )
+    (r.root / "web/package.json").write_text(json.dumps({**PKG, "scripts": {"test:e2e": "exit 0"}}))
+    from repomarshal import inventory
+    from repomarshal.model import Policy
+
+    inv = inventory.build_inventory(r.root, base, Policy(), path_env=None)
+    by_id = {g.id: g for g in inv.gates}
+    assert by_id["web:runtime"].definition_changed
+    assert "web:runtime-playwright" in by_id
