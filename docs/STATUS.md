@@ -27,18 +27,23 @@ v0.5 scope (from the owner): close T31 without CODEOWNERS review.
   the environment `repomarshal-verdict` holds `REPOMARSHAL_APP_CLIENT_ID` and
   `REPOMARSHAL_APP_PRIVATE_KEY`. The setup is documented in `docs/guides/ci.md`.
 - **Required check: done.** Exactly `repomarshal/verdict` (source: the App).
-- Fresh fail-open review: next.
+- **Fresh fail-open review (`tests/review_v05/`): done.** It found 5 fail-open paths, all fixed
+  with regression tests. The critical one: a PR into an attacker-pushed base branch was judged
+  by that branch.
 
 ## Next step
 
-1. Run the fresh fail-open reviewer on the trusted workflow, `ci trusted-verdict` and the
-   `ci-workflow` waiver, with tests under `tests/review_v05/`. Fix every confirmed finding.
-2. Open the PR and report.
+The v0.5 PR (`claude/v0.5` → `main`) is open; it is stacked on PR #3. Next:
+1. The owner merges PR #3 (v0.4), then reviews and merges v0.5.
+2. After v0.5 merges, the owner does the App setup and sets `repomarshal/verdict` as the one
+   required check (`docs/guides/ci.md`).
+3. The first PR after that is the first trusted verdict on GitHub. Check that the
+   `repomarshal-verdict` run posts the status.
 
-Expected for the v0.5 PR:
-- the trusted workflow is not on `main`, so it does not run;
-- the advisory dogfood is judged by main's v0.3 judge (legacy fallback) and is UNKNOWN;
-- no author waiver can work until PR #3 is merged.
+Measured for this branch:
+- suite: 1321 passed;
+- local simulation of the advisory dogfood with the v0.4 judge: UNKNOWN on `root:unit` (new
+  conftest) and `integration`, both waivable by the owner once PR #3 is merged.
 
 ## Upstream repos inspected
 
