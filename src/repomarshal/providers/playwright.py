@@ -132,13 +132,17 @@ def _scopes(files: tuple[str, ...]) -> list[str]:
 
 
 def _config_changes(scope: str, change: ChangeSet | None) -> list[str]:
-    """Changed paths that are a playwright.config.* directly in the scope."""
+    """Changed paths that are a playwright.config.* directly in the scope, or an `.npmrc` that
+    `npx` reads (the scope's or the root's; v0.3 fail-open review #7, as for script gates)."""
     if change is None:
         return []
+    npmrc = {".npmrc", f"{scope}.npmrc"}
     hits = set()
     for f in change.files:
         for p in (f.path, f.old_path):
-            if p and p.startswith(scope):
+            if p in npmrc:
+                hits.add(p)
+            elif p and p.startswith(scope):
                 rel = p[len(scope) :]
                 if "/" not in rel and rel.startswith(CONFIG_PREFIX):
                     hits.add(p)

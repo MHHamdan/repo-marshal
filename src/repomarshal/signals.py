@@ -341,6 +341,22 @@ def skill_dir(path: str, known: Iterable[str] = ()) -> str | None:
     return None if best is None else path[: len(best)]
 
 
+def symlinked_skill_entry(repo: Path, path: str) -> bool:
+    """True for a symlink placed directly in a skill root (`.claude/skills/evil -> /elsewhere`).
+    git records it as one path, so skill_dir (which needs `<root>/<name>/...`) misses it, yet a
+    host follows it and loads the skill it points to (v0.3 fail-open review #5)."""
+    low = path.lower()
+    for root in SKILL_ROOTS:
+        if low.startswith(root):
+            rest = path[len(root) :]
+            if rest and "/" not in rest:
+                try:
+                    return (Path(repo) / path).is_symlink()
+                except OSError:
+                    return True
+    return False
+
+
 @lru_cache(maxsize=32)
 def _base_skill_dirs(repo: str, base: str | None) -> frozenset[str]:
     dirs = set()
@@ -364,7 +380,11 @@ def _skill_changed(f: ChangedFile, ctx: _Ctx) -> tuple[str, ...]:
     if f.status is FileStatus.DELETED:
         return ()
     known = base_skill_dirs(ctx.repo, ctx.base)
-    return tuple(p for p in _candidates(f) if skill_dir(p, known) is not None)
+    return tuple(
+        p
+        for p in _candidates(f)
+        if skill_dir(p, known) is not None or symlinked_skill_entry(ctx.repo, p)
+    )
 
 
 # policy.self_modified: the policy file at the repository root.

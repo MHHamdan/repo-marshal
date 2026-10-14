@@ -32,7 +32,7 @@ Mapping per scanned directory (first match wins):
     recommendation DO_NOT_INSTALL, or max_issue_severity HIGH/CRITICAL     FAIL (rule ids)
     analysis_completeness.is_complete not true                             UNKNOWN
     recommendation CAUTION (exit 0 hides it)                               UNKNOWN
-    recommendation SAFE, complete, exit 0                                  PASS
+    recommendation SAFE, complete, exit 0, scanned_components >= 1        PASS
     anything else                                                          UNKNOWN
 Findings decide FAIL before completeness: a HIGH finding is negative evidence even when another
 file could not be inspected, and a FAIL cannot be waived. The gate result is FAIL if any
@@ -113,6 +113,8 @@ def changed_skill_dirs(repo: Path, change: ChangeSet | None) -> tuple[str, ...]:
         for p in (f.path, f.old_path):
             if p:
                 d = signals.skill_dir(p, known)
+                if d is None and signals.symlinked_skill_entry(repo, p):
+                    d = p  # scanned as a skill entry; run() reports a symlink as UNKNOWN
                 if d is not None:
                     dirs.add(d)
     return tuple(sorted(dirs))
@@ -233,7 +235,15 @@ def classify(
             version,
         )
     if rec == "SAFE" and code == 0:
-        return ResultStatus.PASS, f"{summary}; analysis complete", version
+        scanned = completeness.get("scanned_components")
+        if type(scanned) is not int or scanned < 1:
+            # v0.3 fail-open review #6: SAFE over nothing is not evidence about the skill.
+            return (
+                ResultStatus.UNKNOWN,
+                f"{summary}, but {scanned!r} components were scanned: nothing was scanned",
+                version,
+            )
+        return ResultStatus.PASS, f"{summary}; analysis complete, {scanned} component(s)", version
     if rec not in RECOMMENDATIONS:
         return ResultStatus.UNKNOWN, f"unrecognised recommendation {first_line(rec, 40)!r}", version
     return ResultStatus.UNKNOWN, f"{summary} with exit code {code}; inconsistent", version
@@ -272,7 +282,9 @@ def run(repo: Path, gate: Gate, change: ChangeSet, env: Mapping[str, str] | None
     skipped: list[str] = []
     for d in changed_skill_dirs(repo, change):
         path = (root / d).resolve()
-        if path.is_relative_to(root) and path.is_dir():
+        if d and (root / d).is_symlink():
+            skipped.append(d)  # a host follows it; what it points to is not the change's content
+        elif path.is_relative_to(root) and path.is_dir():
             targets.append(d)
         else:
             skipped.append(d or ".")
@@ -281,7 +293,8 @@ def run(repo: Path, gate: Gate, change: ChangeSet, env: Mapping[str, str] | None
             gate.id,
             gate.kind,
             ResultStatus.UNKNOWN,
-            "no changed skill directory exists in the working tree; nothing was scanned",
+            "no changed skill directory could be scanned (symlink, or not a directory in the "
+            f"working tree: {', '.join(skipped) or 'none'}); nothing was scanned",
             argv=gate.argv,
         )
 
@@ -335,12 +348,15 @@ def run(repo: Path, gate: Gate, change: ChangeSet, env: Mapping[str, str] | None
 
     if ResultStatus.FAIL in statuses:
         final = ResultStatus.FAIL
-    elif ResultStatus.UNKNOWN in statuses:
+    elif ResultStatus.UNKNOWN in statuses or skipped:
+        # A changed skill that could not be scanned (symlinked, or not a directory) is unaudited.
         final = ResultStatus.UNKNOWN
     else:
         final = ResultStatus.PASS
     if skipped:
-        reasons.append("not present in the working tree: " + ", ".join(skipped))
+        reasons.append(
+            "not scanned (symlink, or not a directory in the working tree): " + ", ".join(skipped)
+        )
     reasons.append(EGRESS_NOTE)
     label_argv = (NAME, "scan", targets[0] or ".", *SCAN_FLAGS) if len(targets) == 1 else gate.argv
     return GateResult(

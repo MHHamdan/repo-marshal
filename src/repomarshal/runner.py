@@ -122,7 +122,12 @@ def _run(repo: Path, gate: Gate, change: ChangeSet, env: Mapping[str, str] | Non
                 ResultStatus.UNKNOWN,
                 f"unavailable: {gate.unavailable_reason or 'provider tool not found'}",
             )
-        return providers.run(repo, gate, change, env)
+        # Provider gates run the change's code too (Playwright tests): same credential rule as
+        # command gates below (v0.3 fail-open review #8).
+        provider_env = {
+            k: v for k, v in (os.environ if env is None else env).items() if k not in _CI_TOKENS
+        }
+        return providers.run(repo, gate, change, provider_env)
     if not gate.available:
         return GateResult(
             gate.id,
