@@ -175,6 +175,7 @@ that exist in code, or that are scheduled as v0.1 MUST/SHOULD in the roadmap.
 |---|---|---|---|---|
 | T31 | **The workflow file comes from the PR.** On `pull_request` events GitHub runs the PR's own `ci.yml`, so a PR can rewrite or remove the rm-plan, rm-gate and dogfood jobs | 2 | 3 | Not fixable inside a `pull_request` workflow. Required: branch protection with "Require review from Code Owners" and CODEOWNERS on `.github/workflows/`, so a workflow change needs human review. The stronger fix is to run the verdict from a workflow pinned outside the PR, such as an organisation ruleset's required workflow |
 | T32 | A gate's own PR code can rewrite its result file (including `tree_after`) after `repomarshal ci gate` writes it and before upload | 2 | 1 | Inside T30: it lies only about itself, and the status comes from GitHub's step record |
+| T34 | A `push` run on a PR branch adds a skipped `dogfood` check (skipped counts as success) to the PR head commit, next to the PR run's real verdict | 2 | 3 | Fixed during PR #3 CI: `push` now runs on `main` only, guarded by a static test |
 | T33 | Waiver labels persist across new pushes | 2 | 2 | Unchanged since v0.3. Remove `repomarshal-waive:*` labels once they no longer apply |
 
 ## Residual risks that must be stated in the README

@@ -55,3 +55,10 @@ def test_gate_job_step_names_match_the_binding_contract():
         assert f"- name: {name}\n" in body, name
     assert "name: rm-gate-${{ matrix.index }}" in body
     assert "name: rm-gate-${{ matrix.index }}\n" in body.split("upload result")[1]
+
+
+def test_push_runs_only_on_main():
+    """A push run on a PR branch would put a skipped `dogfood` check on the PR head commit."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    on = text[text.index("\non:\n") : text.index("\n  pull_request:")]
+    assert "branches: [main]" in on

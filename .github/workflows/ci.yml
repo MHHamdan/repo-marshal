@@ -1,6 +1,10 @@
 name: ci
 on:
   push:
+    # Only main: on a PR branch, a push run would add a SKIPPED `dogfood` check (skipped counts
+    # as success) on the same commit as the PR run's real verdict, and a required `dogfood`
+    # check could be satisfied by the skipped one.
+    branches: [main]
   pull_request:
     # labeled/unlabeled: a `repomarshal-waive:<target>` label change re-runs the dogfood verdict.
     # (v0.4: reviews no longer grant waivers, so review events no longer trigger a run. Post the
