@@ -117,6 +117,16 @@ class FakeGitHub:
         number: int = 7,
     ) -> None:
         self.routes[f"/repos/{repo}/issues/{number}/events"] = events or []
+        # The labels on the PR now: those whose latest labeled/unlabeled event is "labeled" (as
+        # GitHub would report them), unless a test sets this route itself.
+        current: dict[str, dict] = {}
+        for ev in events or []:
+            name = (ev.get("label") or {}).get("name")
+            if isinstance(name, str) and ev.get("event") in ("labeled", "unlabeled"):
+                current[name.lower()] = ev
+        self.routes[f"/repos/{repo}/issues/{number}/labels"] = [
+            {"name": ev["label"]["name"]} for ev in current.values() if ev["event"] == "labeled"
+        ]
         self.routes[f"/repos/{repo}/issues/{number}/comments"] = comments or []
         self.routes[f"/repos/{repo}/pulls/{number}/reviews"] = reviews or []
         for login, role in (permissions or {}).items():
@@ -153,6 +163,8 @@ def comment(login: str, body: str, via: dict | None = _NO_APP) -> dict:
         "user": user(login),
         "body": body,
         "html_url": f"https://gh/c/{login}",
+        "created_at": "2026-10-09T00:00:00Z",
+        "updated_at": "2026-10-09T00:00:00Z",  # never edited
         **(via if via is not None else {}),
     }
 

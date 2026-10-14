@@ -167,15 +167,44 @@ def _targets(plan: Plan) -> dict[str, tuple[str, ...]]:
     return out
 
 
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def _prose_lines(body: str) -> list[str]:
+    """The lines of a Markdown comment that a person wrote as text: no fenced or indented code,
+    no block quotes, no HTML comments. A waiver line quoted as an example, or quoted from
+    someone else, is not a statement (v0.4 review #7)."""
+    body = re.sub(r"<!--.*?(?:-->|$)", "", body, flags=re.DOTALL)
+    out: list[str] = []
+    fence: str | None = None
+    for line in body.splitlines():
+        m = _FENCE.match(line)
+        if fence is not None:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                fence = None
+            continue
+        if m:
+            fence = m.group(1)
+            continue
+        if line.startswith(("    ", "\t")) or line.lstrip().startswith(">"):
+            continue
+        out.append(line)
+    return out
+
+
 def _reason_from(body: str | None, target: str) -> str:
-    """The reason on the first line `repomarshal-waive <target>: <reason>` in `body`, or ""."""
+    """The reason on the first prose line `repomarshal-waive <target>: <reason>` in `body`, or
+    ""."""
     if not isinstance(body, str):
         return ""
     pattern = re.compile(
-        rf"^\s*{re.escape(LINE_KEYWORD)}\s+{re.escape(target)}\s*:\s*(\S.*?)\s*$", re.MULTILINE
+        rf"^ {{0,3}}{re.escape(LINE_KEYWORD)}[ \t]+{re.escape(target)}[ \t]*:[ \t]*(\S.*?)\s*$"
     )
-    m = pattern.search(body)
-    return m.group(1) if m else ""
+    for line in _prose_lines(body):
+        m = pattern.match(line)
+        if m:
+            return m.group(1)
+    return ""
 
 
 # --------------------------------------------------------------------------- local mode
@@ -577,17 +606,28 @@ def _label_waivers(
     allow_author: bool = False,
 ) -> list[Waiver]:
     events = gh.paged(f"/repos/{repo}/issues/{number}/events")
+    # GitHub label names are case-insensitive: key everything by the lower-cased name.
     last: dict[str, dict[str, Any]] = {}  # label name -> latest labeled/unlabeled event
     for ev in events:
         if ev.get("event") not in ("labeled", "unlabeled"):
             continue
         label = ev.get("label")
         name = label.get("name") if isinstance(label, dict) else None
-        if isinstance(name, str) and name.startswith(LABEL_PREFIX):
-            last[name] = ev
+        if isinstance(name, str) and name.lower().startswith(LABEL_PREFIX):
+            last[name.lower()] = ev
     applied = {n: ev for n, ev in last.items() if ev.get("event") == "labeled"}
     if not applied:
         return []
+    # The events alone can miss a removal (a renamed or deleted label): the label must also be on
+    # the PR right now (v0.4 review #6).
+    current = {
+        str(lb.get("name")).lower()
+        for lb in gh.paged(f"/repos/{repo}/issues/{number}/labels")
+        if isinstance(lb.get("name"), str)
+    }
+    for name in sorted(set(applied) - current):
+        notes.append(f"label {name!r}: not on the pull request now; ignored")
+        del applied[name]
     comments = gh.paged(f"/repos/{repo}/issues/{number}/comments")
     out: list[Waiver] = []
     for name in sorted(applied):
@@ -619,7 +659,7 @@ def _label_waivers(
                 f"label {name!r}: {login} is neither a CODEOWNER for it nor an admin/maintainer"
             )
             continue
-        reason, ref, app_reason = "", "", False
+        reason, ref, app_reason, edited = "", "", False, False
         for c in comments:  # chronological: keep the latest matching comment
             if (_human(c.get("user")) or "").lower() != login.lower():
                 continue
@@ -629,7 +669,19 @@ def _label_waivers(
             if not _not_via_app(c):
                 app_reason = True  # an app-made comment never supplies a reason
                 continue
+            if c.get("updated_at") != c.get("created_at") or not c.get("created_at"):
+                # performed_via_github_app describes who CREATED the comment. An edit can come
+                # from an app acting as the same user, so an edited comment is not a reason
+                # (v0.4 review #5).
+                edited = True
+                continue
             reason, ref = found, str(c.get("html_url") or "")
+        if not reason and edited:
+            notes.append(
+                f"label {name!r}: the reason comment by {login} was edited after it was posted; "
+                "post a new comment instead; rejected"
+            )
+            continue
         if not reason and app_reason:
             notes.append(
                 f"label {name!r}: the only reason comment(s) by {login} were made through a "
