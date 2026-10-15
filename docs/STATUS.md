@@ -4,31 +4,39 @@ _Last updated: 2026-10-14_
 
 ## Current phase
 
-**v0.8 is in progress** on branch `claude/v0.8`, stacked on `claude/v0.7` (PR #6, still open:
-the owner has not yet added the waiver comment and labels, so there is no live waiver result).
+**v0.8 is in review: PR #7** (`claude/v0.8`), stacked on PR #6 (v0.7, `claude/v0.7`). Neither is
+merged. On PR #6 the owner has not yet added the waiver comment or labels, so there is no live
+waiver result yet.
 
-v0.8 closes **T40** (recorded as T40 because T36 and T37 were already used in
-`docs/security/threat-model.md`): a local agent using the owner's `gh` login or PAT makes label
-and comment events with `performed_via_github_app: null`, so it could self-grant author waivers.
+v0.8 closes **T40** (T36 and T37 were already used in `docs/security/threat-model.md`): a local
+agent using the owner's `gh` login or PAT makes label and comment events with
+`performed_via_github_app: null`, so it could self-grant author waivers.
 
-Done so far:
 - `src/repomarshal/waiversig.py`: SSH-signed waiver codes. The signed message binds repository,
-  PR number, head SHA, target and reason; `ssh-keygen -Y verify` checks it in the namespace
-  `repomarshal-waiver` against the allowed-signers file at BASE, principal = commenter's login.
-- Policy key `completion.waiver_signers` (path at BASE). When set, every label waiver needs a
-  `repomarshal-waive-sig <target> <sig>` line in its reason comment. Author waivers are accepted
-  ONLY with signatures (breaking change, deliberate).
-- CLI `repomarshal waive-sign` prints the comment to post.
-- Tests: `tests/unit/test_waiversig.py`, `tests/unit/test_waiver_signed.py`; the v0.4 identity
-  tests and the trusted ci-workflow tests now sign their comments.
+  PR, head SHA, target, reason and `signed-at`. `ssh-keygen -Y verify`, namespace
+  `repomarshal-waiver`, allowed-signers file at BASE, principal = the commenter's login.
+- `completion.waiver_signers` (BASE path). When set, every label waiver needs
+  `repomarshal-waive-sig <target> <signed-at> <sig>`, posted within 30 minutes of `signed-at` and
+  signed after the label's last removal. Author waivers require it (deliberate breaking change).
+- `repomarshal waive-sign` prints the comment.
+- This repository: `waiver_signers = ".github/repomarshal_allowed_signers"`. The file has only
+  comments until the owner adds their public key line, so author waivers are rejected after merge
+  until then.
+- Fresh fail-open review (`tests/review_v08/`, 30 tests). It found one fail-open (a withdrawn
+  signed waiver could be revived by a relabel or a reposted copy), fixed with `signed-at`, plus
+  hardening.
+- Local: 1575 passed, 18 skipped; ruff clean.
+- CI on PR #7 head 548b819: lint, mcp, test 3.11/3.12/3.13, rm-plan and rm-gate-0 pass.
+  rm-gate-1 (`root:unit`) is UNKNOWN because its gate definition changed (new
+  `tests/review_v08/conftest.py`). dogfood and `repomarshal/verdict` are UNKNOWN with `root:unit`,
+  `integration` and `dep_audit` open, as predicted by the local run of main's judge.
 
 ## Next step
 
-1. Fresh fail-open reviewer on the v0.8 code (`tests/review_v08/`), fix what it finds.
-2. Docs: threat model T40 with the alternatives weighed, waivers guide, ci guide, roadmap.
-3. This repository's policy: `waiver_signers = ".github/repomarshal_allowed_signers"`, the owner
-   adds their public key line.
-4. Open the v0.8 PR and tell the owner the key setup and the signed-waiver steps.
+1. The owner decides on PR #6's live waiver test (comment, then labels) and merges #6, then #7.
+2. After #7 merges, the owner adds a key line to `.github/repomarshal_allowed_signers` (hardware
+   key; see `docs/guides/waivers.md`, "Signed waiver codes").
+3. Then ship 0.1.0 (`docs/guides/release.md`).
 
 ## Upstream repos inspected
 
