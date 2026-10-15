@@ -15,6 +15,8 @@ from repomarshal import waiversig
 needs_ssh_keygen = pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="needs ssh-keygen")
 
 SIGNERS_PATH = ".github/repomarshal_allowed_signers"
+# tests/unit/test_waivers.comment() posts at this time; a code is signed shortly before posting.
+SIGNED_AT = "2026-10-09T00:00:00Z"
 
 
 @dataclass(frozen=True)
@@ -38,14 +40,22 @@ def make_key(directory: Path, name: str = "key") -> Key:
     return Key(priv, f"{pub[0]} {pub[1]}")
 
 
-def token(key: Key, repo: str, pr: int, head: str, target: str, reason: str) -> str:
-    return waiversig.sign(key.private, waiversig.message(repo, pr, head, target, reason))
+def token(
+    key: Key, repo: str, pr: int, head: str, target: str, reason: str, signed_at: str = SIGNED_AT
+) -> str:
+    msg = waiversig.message(repo, pr, head, target, reason, signed_at)
+    return waiversig.sign(key.private, msg)
 
 
-def signed_body(key: Key, repo: str, pr: int, head: str, target: str, reason: str) -> str:
+def signed_body(
+    key: Key, repo: str, pr: int, head: str, target: str, reason: str, signed_at: str = SIGNED_AT
+) -> str:
     """A reason comment as `repomarshal waive-sign` prints it."""
-    sig = token(key, repo, pr, head, target, reason)
-    return f"repomarshal-waive {target}: {reason}\n{waiversig.SIG_KEYWORD} {target} {sig}\n"
+    sig = token(key, repo, pr, head, target, reason, signed_at)
+    return (
+        f"repomarshal-waive {target}: {reason}\n"
+        f"{waiversig.SIG_KEYWORD} {target} {signed_at} {sig}\n"
+    )
 
 
 def sign_raw(key: Key, data: bytes, namespace: str) -> str:

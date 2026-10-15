@@ -609,8 +609,9 @@ def _collect_github(
         gh, repo_name, number, author, targets, owners, notes, allow_author, signing
     )
     out += _review_waivers(
-        gh, repo_name, number, author, head_sha, targets, owners, notes, allow_author
-    )
+        gh, repo_name, number, author, head_sha, targets, owners, notes, allow_author,
+        signed_required=signing.required,
+    )  # fmt: skip
     return out
 
 
@@ -643,33 +644,83 @@ class _Signing:
             return "the pull request head SHA is unknown"
         return None
 
-    def check(self, login: str, target: str, reason: str, body: Any) -> tuple[bool, str]:
-        token = _sig_from(body, target)
-        if not token:
-            return False, f"no '{waiversig.SIG_KEYWORD} {target} <signature>' line"
-        try:
-            msg = waiversig.message(self.repo, self.number, self.head or "", target, reason)
-        except waiversig.SignatureError as e:
-            return False, str(e)
-        ok, why = waiversig.verify(self.signers or b"", login, msg, token)
-        return ok, why if ok else f"signature does not verify for {login} on this head: {why}"
+    def check(
+        self, login: str, target: str, reason: str, comment: dict[str, Any], revoked: Any
+    ) -> tuple[bool, str]:
+        """Whether `comment` carries a valid code for this waiver. `revoked` is the time of the
+        label's most recent `unlabeled` event (or None): a code signed before it was withdrawn
+        (v0.8 review: a relabel or a reposted copy must not revive it)."""
+        lines = _sigs_from(comment.get("body"), target)
+        if not lines:
+            return False, f"no '{waiversig.SIG_KEYWORD} {target} <signed-at> <signature>' line"
+        posted = waiversig.parse_time(comment.get("created_at"))
+        revoked_at = waiversig.parse_time(revoked) if revoked is not None else None
+        if posted is None or (revoked is not None and revoked_at is None):
+            return False, "the comment or label times are unreadable"
+        why = ""
+        for stamp, token in lines:
+            signed = waiversig.parse_time(stamp)
+            if signed is None:
+                why = f"signed-at {stamp!r} is not a UTC time"
+                continue
+            if not signed - waiversig.CLOCK_SKEW <= posted <= signed + waiversig.POST_WINDOW:
+                why = (
+                    f"signed at {stamp} but posted at {comment.get('created_at')}: a code must be "
+                    f"posted within {int(waiversig.POST_WINDOW.total_seconds() // 60)} minutes"
+                )
+                continue
+            if revoked_at is not None and signed <= revoked_at:
+                why = f"signed at {stamp}, before the label was last removed ({revoked})"
+                continue
+            try:
+                msg = waiversig.message(
+                    self.repo, self.number, self.head or "", target, reason, stamp
+                )
+            except waiversig.SignatureError as e:
+                why = str(e)
+                continue
+            ok, err = waiversig.verify(self.signers or b"", login, msg, token)
+            if ok:
+                return True, "verified"
+            why = f"signature does not verify for {login} on this head: {err}{self._hint(login)}"
+        return False, why
+
+    def _hint(self, login: str) -> str:
+        """Name the likely cause when the file lists the login in another case (ssh-keygen
+        matches principals case-sensitively, GitHub logins are not)."""
+        text = (self.signers or b"").removeprefix(b"\xef\xbb\xbf").decode("utf-8", "replace")
+        names: set[str] = set()
+        for line in text.splitlines():
+            parts = line.strip().split()
+            if parts and not parts[0].startswith("#"):
+                names.update(parts[0].split(","))
+        if login in names:
+            return ""
+        if login.lower() in {n.lower() for n in names}:
+            return (
+                f" (the allowed-signers file spells this login in another case; write {login!r} "
+                "exactly)"
+            )
+        return f" (no line for {login!r} in the allowed-signers file)"
 
 
 _SHA40 = re.compile(r"[0-9a-f]{40}")
 
 
-def _sig_from(body: Any, target: str) -> str:
-    """The token on the first prose line `repomarshal-waive-sig <target> <token>`, or ""."""
+def _sigs_from(body: Any, target: str) -> list[tuple[str, str]]:
+    """(signed-at, token) from every prose line `repomarshal-waive-sig <target> <time> <tok>`."""
     if not isinstance(body, str):
-        return ""
+        return []
     pattern = re.compile(
-        rf"^ {{0,3}}{re.escape(waiversig.SIG_KEYWORD)}[ \t]+{re.escape(target)}[ \t]+(\S+)[ \t]*$"
+        rf"^ {{0,3}}{re.escape(waiversig.SIG_KEYWORD)}[ \t]+{re.escape(target)}"
+        r"[ \t]+(\S+)[ \t]+(\S+)[ \t]*$"
     )
+    out = []
     for line in _prose_lines(body):
         m = pattern.match(line)
         if m:
-            return m.group(1)
-    return ""
+            out.append((m.group(1), m.group(2)))
+    return out
 
 
 def _label_waivers(
@@ -686,6 +737,7 @@ def _label_waivers(
     events = gh.paged(f"/repos/{repo}/issues/{number}/events")
     # GitHub label names are case-insensitive: key everything by the lower-cased name.
     last: dict[str, dict[str, Any]] = {}  # label name -> latest labeled/unlabeled event
+    removed: dict[str, Any] = {}  # label name -> created_at of its latest unlabeled event
     for ev in events:
         if ev.get("event") not in ("labeled", "unlabeled"):
             continue
@@ -693,6 +745,8 @@ def _label_waivers(
         name = label.get("name") if isinstance(label, dict) else None
         if isinstance(name, str) and name.lower().startswith(LABEL_PREFIX):
             last[name.lower()] = ev
+            if ev.get("event") == "unlabeled":
+                removed[name.lower()] = ev.get("created_at")
     applied = {n: ev for n, ev in last.items() if ev.get("event") == "labeled"}
     if not applied:
         return []
@@ -767,7 +821,7 @@ def _label_waivers(
                 edited = True
                 continue
             if signed and signing is not None:
-                ok, why = signing.check(login, target, found, c.get("body"))
+                ok, why = signing.check(login, target, found, c, removed.get(name))
                 if not ok:
                     sig_why = why
                     continue
@@ -821,6 +875,7 @@ def _review_waivers(
     owners: CodeOwners,
     notes: list[str],
     allow_author: bool = False,
+    signed_required: bool = False,
 ) -> list[Waiver]:
     reviews = gh.paged(f"/repos/{repo}/pulls/{number}/reviews")
     latest: dict[str, dict[str, Any]] = {}
@@ -835,6 +890,15 @@ def _review_waivers(
         login = _human(rv.get("user")) or key
         asked = [t for t in sorted(targets) if _reason_from(rv.get("body"), t)]
         if not asked:
+            continue
+        if signed_required:
+            # Defence in depth (v0.8 review): signed codes are checked on the label route only,
+            # so a review never grants a waiver while signatures are required, whatever GitHub
+            # adds to the reviews API.
+            notes.append(
+                f"review by {login}: signed waiver codes are required; reviews never grant them "
+                f"(use a '{LABEL_PREFIX}<gate>' label and a signed reason comment)"
+            )
             continue
         if rv.get("state") != "APPROVED":
             notes.append(f"review by {login}: not an approval; its waiver lines are ignored")

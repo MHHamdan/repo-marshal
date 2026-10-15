@@ -280,7 +280,8 @@ repository, PR number, PR head SHA, target and reason. The judge runs `ssh-keyge
 with the commenter's GitHub login as the principal. Consequences:
 
 - A waiver cannot be replayed on another repository, PR, push, target or reason. A new push needs
-  a new signature, which also closes T33 for signed waivers.
+  a new signature, which also closes T33 for signed waivers. The code also carries `signed-at`:
+  removing the label withdraws it for good (see the review findings below).
 - A signature the owner made for something else (a git commit uses the namespace `git`) does not
   verify.
 - All the v0.4 rules still apply. The label and the comment must be human-made, not through an
@@ -301,9 +302,29 @@ with the commenter's GitHub login as the principal. Consequences:
 | Software key, passphrase, **not** loaded in ssh-agent | Anyone who can read the file and get the passphrase. An agent that reads a typed passphrase (e.g. from shell history) can sign |
 | Software key loaded in ssh-agent, or without a passphrase | **Any process running as the owner, the agent included.** No protection against T40 |
 
+### Found by the v0.8 adversarial review (fixed, with regression tests in `tests/review_v08/`)
+
+1. **A withdrawn signed waiver could be revived** (medium-low; it needs a code the owner really
+   signed for that repository, PR, head, target and reason). Removing the label did not void the
+   signed comment, so an agent with the owner's login could re-add the label. Deleting the
+   comment did not help either, because a verbatim copy verified again. A second CODEOWNER's
+   removal could be undone the same way. The signed message now includes `signed-at`. The
+   comment must be posted within 30 minutes of it (5 minutes of skew allowed), and it must be
+   later than the label's most recent `unlabeled` event. Events are append-only, so a withdrawal
+   cannot be erased.
+2. Hardening:
+   - while signatures are required, review waivers are refused explicitly, not only because
+     the reviews API lacks `performed_via_github_app`;
+   - `ssh-keygen` must resolve to an absolute path;
+   - a UTF-8 BOM in the signers file is ignored;
+   - every `repomarshal-waive-sig` line for a target is tried;
+   - a principal that differs only in case is named in the CI note (ssh-keygen matches
+     principals case-sensitively).
+
 | # | Remaining threat (v0.8) | L | I | Note |
 |---|---|---|---|---|
 | T41 | The signing key is a software key the agent can use | 2 | 3 | Use a FIDO key that needs a touch. The judge cannot tell from a signature how the key is stored. The allowed-signers file states the key type, so review it |
+| T43 | Within 30 minutes of a signature, an agent can repost a copy of the comment after the owner deleted it, if the label is still on the PR | 1 | 1 | Same repository, PR, head, target and reason the owner signed. Withdraw by removing the label, which voids the code at once |
 | T42 | An agent with the owner's token merges a PR that adds its own key to the allowed-signers file | 1 | 3 | The file is read at BASE, so this requires a merge into the default branch. Branch protection, with no bypass for administrators, and the owner's own review of every change to that file stop it (this is T36 again) |
 
 ## Residual risks that must be stated in the README

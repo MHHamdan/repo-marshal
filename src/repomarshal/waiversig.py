@@ -7,12 +7,17 @@ label waiver therefore also needs a signature made with the maintainer's SSH sig
 in the same reason comment:
 
     repomarshal-waive <target>: <reason>
-    repomarshal-waive-sig <target> <base64 SSHSIG blob>
+    repomarshal-waive-sig <target> <signed-at> <base64 SSHSIG blob>
 
-The signature covers `message(...)`: the repository, PR number, PR head SHA, target and reason,
-so it cannot be replayed on another PR, another push, another target or another reason. The
-judge checks it with `ssh-keygen -Y verify` against the allowed-signers file read from BASE, with
-the GitHub login of the comment author as the principal.
+The signature covers `message(...)`: the repository, PR number, PR head SHA, target, reason and
+the signing time, so it cannot be replayed on another PR, another push, another target or another
+reason. The judge checks it with `ssh-keygen -Y verify` against the allowed-signers file read
+from BASE, with the GitHub login of the comment author as the principal.
+
+The signing time makes a withdrawal stick (v0.8 review): the comment must be posted within
+POST_WINDOW of `signed-at`, and `signed-at` must be later than the most recent removal of the
+waiver label. An agent that re-adds a removed label, or reposts a copy of a signed comment,
+therefore needs a fresh signature.
 
 The protection is exactly as strong as the key's. A software key loaded in ssh-agent can be used
 by any process running as the maintainer, an agent included. A FIDO hardware key
@@ -20,7 +25,7 @@ by any process running as the maintainer, an agent included. A FIDO hardware key
 verify` rejects an sk signature made without user presence unless the allowed-signers line says
 `no-touch-required`, which then makes a waiver a human act.
 
-    message(repository, pr, head, target, reason) -> bytes
+    message(repository, pr, head, target, reason, signed_at) -> bytes
     sign(key_path, msg) -> str                         (base64, via ssh-keygen -Y sign)
     verify(allowed_signers, principal, msg, sig) -> (bool, why)
     cli_sign(args) -> int                              (`repomarshal waive-sign`)
@@ -36,11 +41,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 NAMESPACE = "repomarshal-waiver"
 SCHEMA = "repomarshal-waiver/1"
 SIG_KEYWORD = "repomarshal-waive-sig"
+
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+POST_WINDOW = timedelta(minutes=30)  # signed-at .. comment created_at
+CLOCK_SKEW = timedelta(minutes=5)  # the signer's clock may run ahead of GitHub's
 
 MAX_SIG_CHARS = 8192
 MAX_SIGNERS_BYTES = 64 * 1024
@@ -50,13 +60,28 @@ _SHA_RE = re.compile(r"[0-9a-f]{40}")
 _REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PRINCIPAL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 _B64_RE = re.compile(r"[A-Za-z0-9+/]+={0,2}")
+_TIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 
 
 class SignatureError(Exception):
     pass
 
 
-def message(repository: str, pr: int, head: str, target: str, reason: str) -> bytes:
+def parse_time(value: object) -> datetime | None:
+    """A UTC time in exactly TIME_FORMAT (as GitHub's API writes it), or None."""
+    if not isinstance(value, str) or not _TIME_RE.fullmatch(value):
+        return None
+    try:
+        return datetime.strptime(value, TIME_FORMAT).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def now() -> str:
+    return datetime.now(UTC).strftime(TIME_FORMAT)
+
+
+def message(repository: str, pr: int, head: str, target: str, reason: str, signed_at: str) -> bytes:
     """The exact bytes that are signed. Every field is single-line and validated, so two different
     waivers can never produce the same message."""
     if not _REPO_RE.fullmatch(repository):
@@ -68,9 +93,11 @@ def message(repository: str, pr: int, head: str, target: str, reason: str) -> by
     for name, value in (("target", target), ("reason", reason)):
         if not value or value != value.strip() or any(c in value for c in "\r\n\0"):
             raise SignatureError(f"{name} must be one non-empty line without outer spaces")
+    if parse_time(signed_at) is None:
+        raise SignatureError(f"signed-at {signed_at!r} is not a UTC time like 2026-10-15T09:30:00Z")
     text = (
         f"{SCHEMA}\nrepository: {repository}\npr: {pr}\nhead: {head}\n"
-        f"target: {target}\nreason: {reason}\n"
+        f"target: {target}\nreason: {reason}\nsigned-at: {signed_at}\n"
     )
     return text.encode("utf-8")
 
@@ -79,6 +106,8 @@ def _ssh_keygen() -> str:
     exe = shutil.which("ssh-keygen")
     if not exe:
         raise SignatureError("ssh-keygen is not installed (OpenSSH 8.2 or later is needed)")
+    if not os.path.isabs(exe):  # a relative PATH entry would run a file from the cwd
+        raise SignatureError(f"ssh-keygen resolved to a relative path {exe!r}; refusing")
     return exe
 
 
@@ -140,6 +169,7 @@ def verify(allowed_signers: bytes, principal: str, msg: bytes, token: str) -> tu
     try:
         if not _PRINCIPAL_RE.fullmatch(principal):
             return False, f"principal {principal!r} is not a GitHub login"
+        allowed_signers = allowed_signers.removeprefix(b"\xef\xbb\xbf")  # editors' UTF-8 BOM
         if not allowed_signers.strip():
             return False, "the allowed-signers file is empty"
         if len(allowed_signers) > MAX_SIGNERS_BYTES:
@@ -172,8 +202,9 @@ def cli_sign(args) -> int:
     target = str(args.target).strip()
     reason = " ".join(str(args.reason).split())
     head = str(args.head).strip().lower()
+    signed_at = now()
     try:
-        msg = message(str(args.repository).strip(), args.pr, head, target, reason)
+        msg = message(str(args.repository).strip(), args.pr, head, target, reason, signed_at)
         token = sign(args.key, msg)
     except SignatureError as e:
         print(f"repomarshal waive-sign: {e}", file=sys.stderr)
@@ -182,8 +213,9 @@ def cli_sign(args) -> int:
         print(f"repomarshal waive-sign: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
     print(f"Post this as a NEW comment on {args.repository}#{args.pr} (as prose, unedited), "
-          f"then add the label repomarshal-waive:{target}. It is valid for head {head[:12]} "
-          "only: after another push, sign again.", file=sys.stderr)  # fmt: skip
+          f"within {int(POST_WINDOW.total_seconds() // 60)} minutes, then add the label "
+          f"repomarshal-waive:{target}. It is valid for head {head[:12]} only: after another "
+          "push, or after the label is removed, sign again.", file=sys.stderr)  # fmt: skip
     print(f"repomarshal-waive {target}: {reason}")
-    print(f"{SIG_KEYWORD} {target} {token}")
+    print(f"{SIG_KEYWORD} {target} {signed_at} {token}")
     return 0

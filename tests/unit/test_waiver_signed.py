@@ -15,7 +15,7 @@ import pytest
 
 from helpers import GitRepo
 from repomarshal import waivers, waiversig
-from sshsig import SIGNERS_PATH, make_key, needs_ssh_keygen, signed_body, token
+from sshsig import SIGNED_AT, SIGNERS_PATH, make_key, needs_ssh_keygen, signed_body, token
 from tests.unit.test_waivers import (
     HEAD,
     FakeGitHub,
@@ -78,8 +78,8 @@ def collect(
     return waivers.collect_report(r.root, plan, "github", github_env({}, gh.url, event))
 
 
-def body(key, login_head: str = HEAD, target: str = TARGET, reason: str = REASON, pr: int = PR):
-    return signed_body(key, REPO, pr, login_head, target, reason)
+def body(key, login_head=HEAD, target=TARGET, reason=REASON, pr=PR, signed_at=SIGNED_AT):
+    return signed_body(key, REPO, pr, login_head, target, reason, signed_at)
 
 
 def grant(gh: FakeGitHub, who: str, *bodies: str, **comment_kw) -> None:
@@ -169,10 +169,12 @@ def test_signature_for_something_else_is_rejected(tmp_path, gh, keys, variant):
         b = body(k, pr=PR + 1)
     elif variant == "other-target":
         sig = token(k, REPO, PR, HEAD, "frontend:unit", REASON)
-        b = f"repomarshal-waive {TARGET}: {REASON}\n{waiversig.SIG_KEYWORD} {TARGET} {sig}\n"
+        b = f"repomarshal-waive {TARGET}: {REASON}\n"
+        b += f"{waiversig.SIG_KEYWORD} {TARGET} {SIGNED_AT} {sig}\n"
     else:
         sig = token(k, REPO, PR, HEAD, TARGET, "something milder")
-        b = f"repomarshal-waive {TARGET}: {REASON}\n{waiversig.SIG_KEYWORD} {TARGET} {sig}\n"
+        b = f"repomarshal-waive {TARGET}: {REASON}\n"
+        b += f"{waiversig.SIG_KEYWORD} {TARGET} {SIGNED_AT} {sig}\n"
     grant(gh, OWNER, b)
     found, notes = collect(r, gh, tmp_path)
     assert found == (), notes
@@ -270,3 +272,64 @@ def test_missing_ssh_keygen_rejects(tmp_path, gh, keys, monkeypatch):
     monkeypatch.setattr(waiversig.shutil, "which", lambda _name: None)
     found, notes = collect(r, gh, tmp_path)
     assert found == () and any("ssh-keygen" in n for n in notes), notes
+
+
+# --------------------------------------------------------------------------- signed-at (review)
+
+
+def _at(c: dict, when: str) -> dict:
+    return {**c, "created_at": when, "updated_at": when}
+
+
+@pytest.mark.parametrize(
+    ("posted", "accepted"),
+    [("2026-10-09T00:00:00Z", True), ("2026-10-09T00:29:59Z", True),
+     ("2026-10-09T00:30:01Z", False), ("2026-10-08T23:55:00Z", True),
+     ("2026-10-08T23:54:59Z", False), ("2026-11-09T00:00:00Z", False)],
+    ids=["same", "29min", "31min", "skew-ok", "skew-too-big", "month-later"],
+)  # fmt: skip
+def test_comment_must_be_posted_soon_after_signing(tmp_path, gh, keys, posted, accepted):
+    r = make_repo(tmp_path, keys["owner"].allowed(OWNER))
+    c = _at(comment(OWNER, body(keys["owner"])), posted)
+    gh.pr(events=[label(TARGET, OWNER)], comments=[c])
+    found, notes = collect(r, gh, tmp_path)
+    assert bool(found) is accepted, notes
+
+
+def test_regrant_after_a_withdrawal_needs_and_accepts_a_fresh_code(tmp_path, gh, keys):
+    """Grant, withdraw (unlabel), grant again: the old code stays void, a new one works."""
+    r = make_repo(tmp_path, keys["owner"].allowed(OWNER))
+    old = _at(comment(OWNER, body(keys["owner"], signed_at=SIGNED_AT)), SIGNED_AT)
+    events = [
+        {**label(TARGET, OWNER, n=1), "created_at": "2026-10-09T00:01:00Z"},
+        {**label(TARGET, OWNER, event="unlabeled", n=2), "created_at": "2026-10-09T01:00:00Z"},
+        {**label(TARGET, OWNER, n=3), "created_at": "2026-10-09T02:00:00Z"},
+    ]
+    gh.pr(events=events, comments=[old])
+    found, notes = collect(r, gh, tmp_path)
+    assert found == () and any("before the label was last removed" in n for n in notes), notes
+    fresh = "2026-10-09T01:50:00Z"
+    new = _at(comment(OWNER, body(keys["owner"], signed_at=fresh)), "2026-10-09T01:51:00Z")
+    gh.pr(events=events, comments=[old, new])
+    assert [w.target for w in collect(r, gh, tmp_path)[0]] == [TARGET]
+
+
+def test_any_valid_sig_line_for_the_target_counts(tmp_path, gh, keys):
+    """A stale code and a fresh one in the same comment: the fresh one is used."""
+    r = make_repo(tmp_path, keys["owner"].allowed(OWNER))
+    stale = body(keys["owner"], login_head=OTHER_HEAD).splitlines()[1]
+    good = body(keys["owner"])
+    grant(gh, OWNER, good.replace("\n", f"\n{stale}\n", 1))
+    assert [w.target for w in collect(r, gh, tmp_path)[0]] == [TARGET]
+
+
+def test_signers_file_with_a_utf8_bom_works(tmp_path, gh, keys):
+    r = make_repo(tmp_path, "﻿" + keys["owner"].allowed(OWNER))
+    grant(gh, OWNER, body(keys["owner"]))
+    assert [w.target for w in collect(r, gh, tmp_path)[0]] == [TARGET]
+
+
+def test_relative_ssh_keygen_on_path_is_refused(monkeypatch):
+    monkeypatch.setattr(waiversig.shutil, "which", lambda _name: "ssh-keygen")
+    with pytest.raises(waiversig.SignatureError, match="relative"):
+        waiversig._ssh_keygen()

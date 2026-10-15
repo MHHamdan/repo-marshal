@@ -8,7 +8,7 @@ import base64
 import pytest
 
 from repomarshal import waiversig
-from sshsig import make_key, needs_ssh_keygen, sign_raw, token
+from sshsig import SIGNED_AT, make_key, needs_ssh_keygen, sign_raw, token
 
 pytestmark = needs_ssh_keygen
 
@@ -27,7 +27,8 @@ def other(tmp_path_factory):
 
 
 def msg(**kw):
-    args = {"repository": REPO, "pr": PR, "head": HEAD, "target": TARGET, "reason": REASON}
+    args = {"repository": REPO, "pr": PR, "head": HEAD, "target": TARGET, "reason": REASON,
+            "signed_at": SIGNED_AT}  # fmt: skip
     args.update(kw)
     return waiversig.message(**args)
 
@@ -36,7 +37,7 @@ def test_message_is_line_based_and_complete():
     text = msg().decode()
     assert text.splitlines() == [
         "repomarshal-waiver/1", f"repository: {REPO}", f"pr: {PR}", f"head: {HEAD}",
-        f"target: {TARGET}", f"reason: {REASON}",
+        f"target: {TARGET}", f"reason: {REASON}", f"signed-at: {SIGNED_AT}",
     ]  # fmt: skip
 
 
@@ -44,7 +45,8 @@ def test_message_is_line_based_and_complete():
     "kw",
     [{"repository": "no-slash"}, {"pr": 0}, {"pr": True}, {"pr": "7"}, {"head": "C" * 40},
      {"head": "c" * 39}, {"target": ""}, {"reason": ""}, {"reason": "a\nhead: " + "d" * 40},
-     {"reason": " padded"}, {"target": "x\r"}],
+     {"reason": " padded"}, {"target": "x\r"}, {"signed_at": "2026-10-09 00:00:00"},
+     {"signed_at": "2026-13-09T00:00:00Z"}, {"signed_at": ""}],
 )  # fmt: skip
 def test_message_refuses_ambiguous_fields(kw):
     with pytest.raises(waiversig.SignatureError):
@@ -61,8 +63,8 @@ def test_signature_verifies_for_the_listed_principal(key):
 @pytest.mark.parametrize(
     "change",
     [{"repository": "acme/other"}, {"pr": 8}, {"head": "d" * 40}, {"target": "frontend:unit"},
-     {"reason": "a different reason"}],
-    ids=["repo", "pr", "head", "target", "reason"],
+     {"reason": "a different reason"}, {"signed_at": "2026-10-09T00:00:01Z"}],
+    ids=["repo", "pr", "head", "target", "reason", "signed-at"],
 )  # fmt: skip
 def test_signature_is_bound_to_every_field(key, change):
     sig = token(key, REPO, PR, HEAD, TARGET, REASON)
@@ -157,9 +159,10 @@ def test_cli_prints_a_comment_that_verifies(key, capsys):
     assert waiversig.cli_sign(_args(key)) == 0
     reason_line, sig_line = capsys.readouterr().out.splitlines()
     assert reason_line == f"repomarshal-waive {TARGET}: {REASON}"  # whitespace collapsed
-    kw, target, sig = sig_line.split(" ")
+    kw, target, stamp, sig = sig_line.split(" ")
     assert (kw, target) == (waiversig.SIG_KEYWORD, TARGET)
-    assert waiversig.verify(key.allowed(LOGIN).encode(), LOGIN, msg(), sig)[0]
+    assert waiversig.parse_time(stamp) is not None
+    assert waiversig.verify(key.allowed(LOGIN).encode(), LOGIN, msg(signed_at=stamp), sig)[0]
 
 
 @pytest.mark.parametrize("kw", [{"head": "abc"}, {"pr": -1}, {"repository": "x"}, {"key": "/nope"}])

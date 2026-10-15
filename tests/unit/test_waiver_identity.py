@@ -78,7 +78,7 @@ def reason_comments(how: str) -> list[dict]:
     (c,) = _recorded("app_comments.json")
     assert c["user"]["login"] == MAINTAINER
     c = _via(c, how)
-    c["body"] = signed_body(_key(), "acme/webapp", 7, HEAD, TARGET, REASON)
+    c["body"] = signed_body(_key(), "acme/webapp", 7, HEAD, TARGET, REASON, c["created_at"])
     return [c]
 
 
@@ -204,4 +204,5 @@ def test_review_waiver_is_rejected_even_from_a_human_author_with_the_policy(repo
     gh.pr(reviews=[review])
     found, notes = collect(repo, gh, tmp_path, allow_author=True)
     assert found == (), notes
-    assert any("reviews API does not say" in n for n in notes), notes
+    # v0.8: with signed codes required, reviews are refused before the app check.
+    assert any("reviews API does not say" in n or "reviews never grant" in n for n in notes), notes

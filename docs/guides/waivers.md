@@ -156,28 +156,36 @@ It asks for a touch (and PIN), then prints two lines:
 
 ```text
 repomarshal-waive root:unit: discovery taint comes only from test fixture pyproject files
-repomarshal-waive-sig root:unit U1NIU0lHAAAAAQAAAEoAAAAac2stc3NoLWVkMjU1MTlAb3BlbnNzaC5jb20...
+repomarshal-waive-sig root:unit 2026-10-15T09:30:00Z U1NIU0lHAAAAAQAAAEoAAAAac2stc3NoLWVk...
 ```
 
-Paste them into a **new** PR comment as plain text (not in a code block), with no edits. Codes
-for several targets can share one comment. Then apply the label `repomarshal-waive:root:unit`.
-Post the comment first: adding the label is what re-runs CI.
+Paste them into a **new** PR comment as plain text (not in a code block), with no edits,
+**within 30 minutes** of signing. Codes for several targets can share one comment. Then apply
+the label `repomarshal-waive:root:unit`. Post the comment first: adding the label is what
+re-runs CI.
 
 Without RepoMarshal installed, the same code is:
 
 ```sh
-printf 'repomarshal-waiver/1\nrepository: %s\npr: %s\nhead: %s\ntarget: %s\nreason: %s\n' \
-  MHHamdan/repo-marshal 7 "$HEAD_SHA" root:unit "discovery taint comes only from test fixture pyproject files" \
+SIGNED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf 'repomarshal-waiver/1\nrepository: %s\npr: %s\nhead: %s\ntarget: %s\nreason: %s\nsigned-at: %s\n' \
+  MHHamdan/repo-marshal 7 "$HEAD_SHA" root:unit "discovery taint comes only from test fixture pyproject files" "$SIGNED_AT" \
   | ssh-keygen -Y sign -f ~/.ssh/id_repomarshal_sk -n repomarshal-waiver | sed '1d;$d' | tr -d '\n'
 ```
 
-The reason must match the comment's reason exactly.
+The comment line is then `repomarshal-waive-sig root:unit $SIGNED_AT <that output>`. The
+reason must match the comment's reason exactly.
 
-**What the code binds.** It covers the repository, PR number, head SHA, target and reason. It is
-checked with `ssh-keygen -Y verify` against the allowed-signers file at BASE, with the comment
-author's login as the principal. A new push makes it invalid, so sign again for the new head. A
-code for another PR, target or reason, or one made with any other key, is rejected with a note
-in the CI log.
+**What the code binds.** It covers the repository, PR number, head SHA, target, reason and the
+signing time (`signed-at`). It is checked with `ssh-keygen -Y verify` against the
+allowed-signers file at BASE, with the comment author's login as the principal. A new push makes
+it invalid, so sign again for the new head. A code for another PR, target or reason, or one made
+with any other key, is rejected with a note in the CI log.
+
+**Withdrawing a waiver.** Remove the label. A code signed before the label's most recent removal
+never counts again, and a comment must be posted within 30 minutes of its `signed-at` (5 minutes
+of clock skew allowed). So an agent can neither re-add the label to revive your old comment nor
+repost a copy of it. To grant the waiver again, sign a fresh code.
 
 **Fail closed.** If the signers file is missing at BASE, the head SHA is unknown, or `ssh-keygen`
 is missing on the runner (GitHub's Ubuntu runners have it), no signed waiver is accepted.
