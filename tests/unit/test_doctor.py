@@ -57,7 +57,18 @@ def test_doctor_reports_the_webapp(webapp):
     assert rep["head"] == webapp.base and rep["base"] == webapp.base
     assert rep["base_resolution"].startswith("automatic")
     assert rep["uncommitted"] is False and rep["changed_paths"] == 0
-    assert f["policy"] == {"status": "default", "source": "default", "errors": []}
+    assert f["policy"] == {
+        "status": "default",
+        "source": "default",
+        "errors": [],
+        "waivers": {
+            "waivers_permit_pass": False,
+            "allow_author_waivers": False,
+            "signers_path": None,
+            "signers_found": None,
+            "signers": [],
+        },
+    }
     assert set(f["scopes"]) >= {"frontend/", "backend/"}
     ids = {g["id"] for g in f["gates"]}
     assert {"frontend:lint", "backend:unit", "native:docs-links", "native:secrets-diff"} <= ids
@@ -173,3 +184,95 @@ def test_doctor_internal_error_exits_4(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(doctor, "collect", boom)
     assert doctor.run(argparse.Namespace(repo=str(tmp_path), json=True)) == 4
     assert capsys.readouterr().out == ""
+
+
+# --------------------------------------------------------------------------- waivers (v0.9, T40)
+
+SK_KEY = "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29t key"
+SOFT_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFr418tPi5oUg74SW6yoBflrVWqnZfIC3afr4PVtvBvd key"
+SIGNERS = ".github/repomarshal_allowed_signers"
+
+
+def _waiver_repo(tmp_path: Path, completion: str, signers: str | None = None) -> dict:
+    r = GitRepo(tmp_path / "w")
+    r.write("README.md", "x\n")
+    r.write("repomarshal.toml", f"version = 1\n[completion]\n{completion}")
+    if signers is not None:
+        r.write(SIGNERS, signers)
+    r.commit("BASE")
+    return doctor.collect(r.root)
+
+
+def _problems(f: dict, needle: str) -> list[str]:
+    return [p for p in f["problems"] if needle in p]
+
+
+def test_doctor_author_waivers_without_signers_are_flagged(tmp_path):
+    f = _waiver_repo(tmp_path, "waivers_permit_pass = true\nallow_author_waivers = true\n")
+    w = f["policy"]["waivers"]
+    assert w["allow_author_waivers"] and w["signers_path"] is None
+    assert _problems(f, "every author waiver is rejected (T40")
+    assert f["plannable"] is True
+
+
+def test_doctor_reports_a_hardware_signing_key(tmp_path):
+    line = f'MHHamdan namespaces="repomarshal-waiver",verify-required {SK_KEY}\n'
+    f = _waiver_repo(
+        tmp_path,
+        f'allow_author_waivers = true\nwaiver_signers = "{SIGNERS}"\n',
+        "# comment\n\n" + line,
+    )
+    w = f["policy"]["waivers"]
+    assert w["signers_found"] is True
+    assert w["signers"] == [
+        {
+            "principals": ["MHHamdan"],
+            "key_type": "sk-ssh-ed25519@openssh.com",
+            "hardware": True,
+            "touch_required": True,
+            "namespaces": "repomarshal-waiver",
+            "error": None,
+        }
+    ]
+    assert not _problems(f, "waiver")
+
+
+@pytest.mark.parametrize(
+    ("signers", "needle"),
+    [
+        (None, "does not exist at BASE"),
+        ("# only comments\n", "lists no key"),
+        (f"MHHamdan {SOFT_KEY}\n", "not a hardware (sk-) key"),
+        (f"MHHamdan no-touch-required {SK_KEY}\n", "no-touch-required"),
+        ("MHHamdan just-garbage\n", "no key type"),
+        ('MHHamdan namespaces="unterminated ' + SK_KEY + "\n", "unparsable line"),
+    ],
+    ids=["missing", "empty", "software-key", "no-touch", "no-key-type", "bad-quote"],
+)
+def test_doctor_flags_weak_or_broken_signer_setups(tmp_path, signers, needle):
+    f = _waiver_repo(tmp_path, f'waiver_signers = "{SIGNERS}"\n', signers)
+    assert _problems(f, needle), f["problems"]
+    assert f["plannable"] is True
+
+
+def test_doctor_reads_the_signers_file_at_base_not_the_worktree(tmp_path):
+    r = GitRepo(tmp_path / "w")
+    r.write("README.md", "x\n")
+    r.write("repomarshal.toml", f'version = 1\n[completion]\nwaiver_signers = "{SIGNERS}"\n')
+    r.commit("BASE")
+    r.write(SIGNERS, f"MHHamdan {SK_KEY}\n")  # uncommitted: not in effect
+    f = doctor.collect(r.root)
+    assert f["policy"]["waivers"]["signers_found"] is False
+    assert _problems(f, "does not exist at BASE")
+
+
+def test_doctor_text_shows_the_waiver_setup(tmp_path, capsys):
+    r = GitRepo(tmp_path / "w")
+    r.write("README.md", "x\n")
+    r.write("repomarshal.toml", f'version = 1\n[completion]\nwaiver_signers = "{SIGNERS}"\n')
+    r.write(SIGNERS, f"MHHamdan {SK_KEY}\n")
+    r.commit("BASE")
+    assert doctor.run(argparse.Namespace(repo=str(r.root), json=False)) == 0
+    out = capsys.readouterr().out
+    assert f"signed codes required: {SIGNERS} (found at BASE)" in out
+    assert "MHHamdan" in out and "touch required" in out

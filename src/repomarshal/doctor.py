@@ -18,6 +18,10 @@ Implementation notes (agent "hosts"):
   or the inventory inconsistent (duplicate gate ids); 4 internal error.
 - --json object keys (stable): repomarshal_version, python, git, repository, policy, scopes, gates,
   providers, plannable, problems. Values that do not apply are null.
+- policy.waivers (v0.9): how CI waivers are set up at BASE: waivers_permit_pass,
+  allow_author_waivers, and the waiver_signers file (T40) with one entry per key line
+  (principals, key type, hardware, touch_required). Setups that defeat signed waiver codes are
+  listed in problems; they do not affect `plannable`.
 """
 
 from __future__ import annotations
@@ -27,6 +31,8 @@ import importlib.util
 import json
 import os
 import platform
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -131,7 +137,7 @@ def collect(repo: str | Path, path_env: str | None = None) -> dict[str, Any]:
             "uncommitted": None,
             "changed_paths": None,
         },
-        "policy": {"status": None, "source": None, "errors": []},
+        "policy": {"status": None, "source": None, "errors": [], "waivers": None},
         "scopes": None,
         "gates": None,
         "providers": _providers(),
@@ -171,6 +177,7 @@ def collect(repo: str | Path, path_env: str | None = None) -> dict[str, Any]:
         problems.append(f"{policy.POLICY_FILE} at BASE is invalid: plan and done are BLOCKED")
         return facts
     pol_facts.update(status="default" if pol.source == "default" else "valid", source=pol.source)
+    pol_facts["waivers"] = _waiver_facts(root, base, pol, problems)
     if pol.source == "default" and (root / policy.POLICY_FILE).exists():
         problems.append(
             f"{policy.POLICY_FILE} exists in the working tree but not at BASE: it has no effect "
@@ -189,6 +196,85 @@ def collect(repo: str | Path, path_env: str | None = None) -> dict[str, Any]:
             problems.append(f"gate {g.id} is unavailable ({g.unavailable_reason})")
     facts["plannable"] = True
     return facts
+
+
+_KEY_TYPE = re.compile(r"(?:ssh-|ecdsa-|sk-)[A-Za-z0-9@._-]+")
+
+
+def _signer_line(line: str) -> dict[str, Any] | None:
+    """One allowed-signers line: `principals [options] keytype key [comment]`, or None when it is
+    a comment, blank or unreadable."""
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return None
+    try:
+        tokens = shlex.split(line, posix=True)
+    except ValueError:
+        return {"principals": [], "key_type": None, "hardware": False, "touch_required": False,
+                "namespaces": None, "error": "unparsable line"}  # fmt: skip
+    i = next((n for n, t in enumerate(tokens[1:], 1) if _KEY_TYPE.fullmatch(t)), None)
+    if i is None:
+        return {"principals": tokens[0].split(","), "key_type": None, "hardware": False,
+                "touch_required": False, "namespaces": None, "error": "no key type"}  # fmt: skip
+    options = ",".join(tokens[1:i]).split(",")
+    names = [o.split("=", 1)[1] for o in options if o.startswith("namespaces=")]
+    key_type = tokens[i]
+    hardware = key_type.startswith("sk-")
+    return {
+        "principals": tokens[0].split(","),
+        "key_type": key_type,
+        "hardware": hardware,
+        "touch_required": hardware and "no-touch-required" not in options,
+        "namespaces": names[0] if names else None,
+        "error": None,
+    }
+
+
+def _waiver_facts(root: Path, base: str | None, pol: Any, problems: list[str]) -> dict[str, Any]:
+    """How waivers are set up at BASE, and the problems that make signed codes (T40) weak."""
+    out: dict[str, Any] = {
+        "waivers_permit_pass": pol.waivers_permit_pass,
+        "allow_author_waivers": pol.allow_author_waivers,
+        "signers_path": pol.waiver_signers or None,
+        "signers_found": None,
+        "signers": [],
+    }
+    if not pol.waiver_signers:
+        if pol.allow_author_waivers:
+            problems.append(
+                "allow_author_waivers is set but waiver_signers is not: every author waiver is "
+                "rejected (T40; docs/guides/waivers.md, 'Signed waiver codes')"
+            )
+        return out
+    raw = git.read_at(root, base, pol.waiver_signers)
+    out["signers_found"] = raw is not None
+    if raw is None:
+        problems.append(
+            f"waiver_signers file {pol.waiver_signers} does not exist at BASE: every label waiver "
+            "is rejected until it is committed on the base branch"
+        )
+        return out
+    text = raw.removeprefix(b"\xef\xbb\xbf").decode("utf-8", "replace")
+    out["signers"] = [e for e in map(_signer_line, text.splitlines()) if e is not None]
+    if not out["signers"]:
+        problems.append(
+            f"waiver_signers file {pol.waiver_signers} lists no key: every label waiver is "
+            "rejected until a key line is added"
+        )
+    for e in out["signers"]:
+        who = ",".join(e["principals"]) or "?"
+        if e["error"]:
+            problems.append(f"waiver_signers line for {who}: {e['error']}; ssh-keygen will skip it")
+        elif not e["hardware"]:
+            problems.append(
+                f"waiver signing key for {who} is {e['key_type']}, not a hardware (sk-) key: any "
+                "process that can use it, an agent included, can sign waivers (T41)"
+            )
+        elif not e["touch_required"]:
+            problems.append(
+                f"waiver signing key for {who} has no-touch-required: signing needs no person (T41)"
+            )
+    return out
 
 
 def _text(f: dict[str, Any]) -> str:
@@ -210,6 +296,21 @@ def _text(f: dict[str, Any]) -> str:
         out.append(f"policy: {p['status']} ({p['source']})")
         for err in p["errors"]:
             out.append(f"  - {err}")
+    w = p.get("waivers")
+    if w:
+        out.append(
+            f"waivers: count as PASS {'yes' if w['waivers_permit_pass'] else 'no'}; "
+            f"author waivers {'allowed' if w['allow_author_waivers'] else 'not allowed'}"
+        )
+        if w["signers_path"]:
+            found = "found at BASE" if w["signers_found"] else "MISSING at BASE"
+            out.append(f"  signed codes required: {w['signers_path']} ({found})")
+            for e in w["signers"]:
+                kind = e["key_type"] or "?"
+                touch = "touch required" if e["touch_required"] else "NO touch"
+                out.append(f"    {','.join(e['principals']) or '?':<20} {kind}  {touch}")
+        else:
+            out.append("  signed codes: not required (no waiver_signers)")
     if f["scopes"] is not None:
         scopes = ", ".join(s or "(root)" for s in f["scopes"]) or "-"
         out.append(f"scopes: {scopes}")

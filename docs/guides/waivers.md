@@ -139,6 +139,10 @@ the agent included, and then protects nothing.
 3. Name the file in `repomarshal.toml` (`waiver_signers`, above). Both files are read from BASE,
    so they take effect after they merge. Review every later change to the signers file yourself:
    whoever can add a key there can grant waivers (T42).
+4. Check the setup with `repomarshal doctor` (v0.9) on the default branch. Its `waivers` section
+   lists each key line with its type and whether a touch is required. Under problems it flags a
+   missing or empty signers file, a software key, `no-touch-required`, a line ssh-keygen would
+   skip, and author waivers enabled without signed codes.
 
 ### Granting a waiver
 
