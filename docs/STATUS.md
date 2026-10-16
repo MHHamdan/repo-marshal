@@ -33,10 +33,27 @@ agent using the owner's `gh` login or PAT makes label and comment events with
 
 ## Next step
 
-1. The owner decides on PR #6's live waiver test (comment, then labels) and merges #6, then #7.
-2. After #7 merges, the owner adds a key line to `.github/repomarshal_allowed_signers` (hardware
-   key; see `docs/guides/waivers.md`, "Signed waiver codes").
-3. Then ship 0.1.0 (`docs/guides/release.md`).
+**v0.9 is prepared** on `claude/v0.9` (pushed, no PR yet), based on `claude/v0.8`:
+- `CLAUDE.md`: never post PR comments, reviews or issues on GitHub; report in chat (owner's rule,
+  2026-10-16).
+- `repomarshal doctor` reports the waiver setup (policy.waivers) and flags weak signed-code
+  configurations (tests in `tests/unit/test_doctor.py`).
+- Local: 1585 passed, 18 skipped. The v0.8 judge, run with BASE = `claude/v0.8`, gives UNKNOWN
+  with one open item: `integration` (required because `agent.config_changed` + `code.changed`
+  make the risk elevated; no integration gate). That is the target for the first live signed
+  waiver.
+
+Waiting on the owner:
+1. Merge PR #6, then PR #7.
+2. Commit a key line to `.github/repomarshal_allowed_signers` on main (hardware key; check with
+   `repomarshal doctor`).
+
+Then:
+3. Merge `origin/main` into `claude/v0.9` (a merge commit: the branch is pushed, so no rebase),
+   push, open the v0.9 PR, and give the owner the exact `repomarshal waive-sign` command for
+   target `integration` on the PR's head.
+4. Record the live result of both judges (advisory dogfood and `repomarshal/verdict`) here.
+5. Then ship 0.1.0 (`docs/guides/release.md`).
 
 ## Upstream repos inspected
 
