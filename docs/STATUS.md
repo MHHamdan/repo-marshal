@@ -33,27 +33,24 @@ agent using the owner's `gh` login or PAT makes label and comment events with
 
 ## Next step
 
-**v0.9 is prepared** on `claude/v0.9` (pushed, no PR yet), based on `claude/v0.8`:
+**v0.9 PR: live test of signed waivers** (`claude/v0.9`, main merged in at 116a9a1):
 - `CLAUDE.md`: never post PR comments, reviews or issues on GitHub; report in chat (owner's rule,
   2026-10-16).
 - `repomarshal doctor` reports the waiver setup (policy.waivers) and flags weak signed-code
-  configurations (tests in `tests/unit/test_doctor.py`).
-- Local: 1585 passed, 18 skipped. The v0.8 judge, run with BASE = `claude/v0.8`, gives UNKNOWN
-  with one open item: `integration` (required because `agent.config_changed` + `code.changed`
-  make the risk elevated; no integration gate). That is the target for the first live signed
-  waiver.
-
-Waiting on the owner:
-1. Merge PR #6, then PR #7.
-2. Commit a key line to `.github/repomarshal_allowed_signers` on main (hardware key; check with
-   `repomarshal doctor`).
+  configurations. On this repository it reports the owner's key (`MHHamdan`, `ssh-ed25519`,
+  namespace `repomarshal-waiver`) and the expected T41 problem: a software key.
+- The owner's signing key is on main at 116a9a1: a software ed25519 key, passphrase-protected,
+  not in ssh-agent (no FIDO device available). This is the weaker T41 setup, documented as such.
+- Judge prediction (main's judge at 116a9a1, BASE = 116a9a1): UNKNOWN, one open item,
+  `integration` (risk elevated by `agent.config_changed` + `code.changed`; no integration gate).
 
 Then:
-3. Merge `origin/main` into `claude/v0.9` (a merge commit: the branch is pushed, so no rebase),
-   push, open the v0.9 PR, and give the owner the exact `repomarshal waive-sign` command for
-   target `integration` on the PR's head.
-4. Record the live result of both judges (advisory dogfood and `repomarshal/verdict`) here.
-5. Then ship 0.1.0 (`docs/guides/release.md`).
+1. The owner runs `repomarshal waive-sign integration ...` for the PR head (command given in
+   chat), posts the two lines as a new PR comment within 30 minutes, then adds the label
+   `repomarshal-waive:integration`.
+2. Record the live result of both judges (advisory dogfood and `repomarshal/verdict`) here.
+   Expected: PASS, with the waiver identity `MHHamdan (ssh-signed)`.
+3. Then ship 0.1.0 (`docs/guides/release.md`).
 
 ## Upstream repos inspected
 
