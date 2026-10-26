@@ -3,4 +3,4 @@
 # (sk-ssh-ed25519@openssh.com) and never add `no-touch-required`. See docs/guides/waivers.md.
 #
 # MHHamdan namespaces="repomarshal-waiver",verify-required sk-ssh-ed25519@openssh.com AAAA... repomarshal waivers
-MHHamdan namespaces="repomarshal-waiver" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILME8ia53E4QNbmdkyagFlwaYSwE/VBgikTc8ZmwmNSr repomarshal waivers
+MHHamdan namespaces="repomarshal-waiver" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID6Nk4hKB0QixlFFYIGSVW0M72aIfzXDCE2pKBhSPAqf repomarshal waivers
