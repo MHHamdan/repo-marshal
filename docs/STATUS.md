@@ -4,8 +4,7 @@ _Last updated: 2026-10-14_
 
 ## Current phase
 
-**v0.8 is in review: PR #7** (`claude/v0.8`), stacked on PR #6 (v0.7, `claude/v0.7`). Neither is
-merged. On PR #6 the owner has not yet added the waiver comment or labels, so there is no live
+**v0.8 (PR #7) and v0.7 (PR #6) are merged.** On PR #6 the owner has not yet added the waiver comment or labels, so there is no live
 waiver result yet.
 
 v0.8 closes **T40** (T36 and T37 were already used in `docs/security/threat-model.md`): a local
@@ -33,23 +32,28 @@ agent using the owner's `gh` login or PAT makes label and comment events with
 
 ## Next step
 
-**v0.9 PR: live test of signed waivers** (`claude/v0.9`, main merged in at 116a9a1):
-- `CLAUDE.md`: never post PR comments, reviews or issues on GitHub; report in chat (owner's rule,
-  2026-10-16).
-- `repomarshal doctor` reports the waiver setup (policy.waivers) and flags weak signed-code
-  configurations. On this repository it reports the owner's key (`MHHamdan`, `ssh-ed25519`,
-  namespace `repomarshal-waiver`) and the expected T41 problem: a software key.
-- The owner's signing key is on main at 116a9a1: a software ed25519 key, passphrase-protected,
-  not in ssh-agent (no FIDO device available). This is the weaker T41 setup, documented as such.
-- Judge prediction (main's judge at 116a9a1, BASE = 116a9a1): UNKNOWN, one open item,
-  `integration` (risk elevated by `agent.config_changed` + `code.changed`; no integration gate).
+**v0.9 is merged (PR #8, 694ebe7). Live signed-waiver test: done.**
 
-Then:
-1. The owner runs `repomarshal waive-sign integration ...` for the PR head (command given in
-   chat), posts the two lines as a new PR comment within 30 minutes, then adds the label
-   `repomarshal-waive:integration`.
-2. Record the live result of both judges (advisory dogfood and `repomarshal/verdict`) here.
-   Expected: PASS, with the waiver identity `MHHamdan (ssh-signed)`.
+Live result on PR #8, head 58169d5, BASE 66ab69c (the owner's key after two rotations, PRs #9
+and #10; software ed25519 key, passphrase-protected, not in ssh-agent):
+- The owner ran `repomarshal waive-sign integration ...` and posted the two lines as a new comment
+  (signed 00:17:10Z, posted 00:17:58Z, 2026-10-26), then added `repomarshal-waive:integration`.
+- **Trusted verdict (`repomarshal/verdict`, default-branch workflow): PASS**, "every required gate
+  passed (or was waived by a person)". The signed author waiver works end to end.
+- **Advisory `dogfood` job, same run: exit 2 (UNKNOWN). Cause not yet known.** Its log and
+  evidence artifact cannot be downloaded from the cloud session (the blob host is blocked). A
+  local replay with the judge's own code, BASE 66ab69c, real gates and GitHub's real job records
+  for run 40248739537 returns PASS with the waiver accepted ("WAIVED by MHHamdan (ssh-signed)").
+  Next: read the `repomarshal verdict` step output of that dogfood job (owner) and fix the cause.
+- Lessons from the test: a label alone does nothing without the signed comment; a comment does
+  not re-run CI (add the label, or re-run the jobs); removing the label voids earlier codes; every
+  merge into the PR branch or key rotation needs a new signature for the new head.
+
+Open:
+1. Dogfood UNKNOWN above.
+2. `commit-identity` push runs fail on GitHub-made merge commits (94fa582, 66ab69c, 694ebe7:
+   committer `noreply@github.com`). Owner to choose: merge locally (fast-forward), or allow GitHub
+   as committer on two-parent merge commits authored by the owner.
 3. Then ship 0.1.0 (`docs/guides/release.md`).
 
 ## Upstream repos inspected
