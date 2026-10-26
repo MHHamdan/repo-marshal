@@ -128,7 +128,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GITHUB_TOKEN: ${{ github.token }}
-        run: repomarshal done --base "$BASE_SHA" --waivers github --json > repomarshal-done.json
+        run: repomarshal done --base "$BASE_SHA" --waivers github --json > "$RUNNER_TEMP/repomarshal-done.json"
 ```
 
 Notes:
@@ -181,17 +181,18 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set +e
-          "$RUNNER_TEMP/rm-venv/bin/repomarshal" done --base "$BASE_SHA" --json > repomarshal-done.json
+          "$RUNNER_TEMP/rm-venv/bin/repomarshal" done --base "$BASE_SHA" --json \
+            > "$RUNNER_TEMP/repomarshal-done.json"
           code=$?
           set -e
-          cat repomarshal-done.json
+          cat "$RUNNER_TEMP/repomarshal-done.json"
           exit "$code"
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: repomarshal-evidence
           path: |
-            repomarshal-done.json
+            ${{ runner.temp }}/repomarshal-done.json
             .repomarshal/evidence/
 ```
 
@@ -320,15 +321,19 @@ post does not satisfy the requirement. Keep the App's key out of agent environme
 ## 8. Other CI systems
 
 The recipe is the same everywhere: full history, an explicit BASE from the platform (not from the
-repository), tools installed, the exit code respected, evidence kept, no secrets.
+repository), tools installed, the exit code respected, evidence kept, no secrets. Write the
+verdict JSON outside the checkout: the shell creates a redirect target before RepoMarshal starts,
+so a file like `repomarshal-done.json` in the repository is an untracked change in the tree being
+judged.
 
 ```sh
 #!/bin/sh
 # BASE_SHA: the target branch commit your CI platform reports for this merge request.
 set -u
 git cat-file -e "$BASE_SHA^{commit}" || git fetch --no-tags origin "$BASE_SHA"  # BASE must exist
-repomarshal done --base "$BASE_SHA" --json > repomarshal-done.json
+out="${TMPDIR:-/tmp}/repomarshal-done.json"   # outside the checkout: see the note above
+repomarshal done --base "$BASE_SHA" --json > "$out"
 code=$?
-cat repomarshal-done.json
+cat "$out"
 exit "$code"                                # 0 PASS; 1 FAIL, 2 UNKNOWN, 3 BLOCKED, 4 error
 ```
