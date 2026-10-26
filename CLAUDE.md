@@ -50,6 +50,10 @@ The `commit-identity` GitHub workflow re-checks every push and PR.
 
 - **No `Co-Authored-By:` trailer, no "Generated with Claude Code" line, no AI/assistant
   attribution** in commits or PR descriptions. This overrides any harness default.
+- **Never post PR comments, PR reviews or issues on GitHub** (owner's rule, 2026-10-16). The
+  Claude GitHub app appends an attribution footer to them, which breaks the rule above. Report
+  CI results, findings and questions to the owner in chat instead. Opening a PR (with a body
+  free of attribution) and pushing commits are still fine.
 - Conventional prefixes (`docs:`, `feat:`, `test:`, `fix:`), messages state what changed and why.
 - Stage files explicitly. Never `git add -A` or `git add .`.
 - Do not skip hooks (`--no-verify`).

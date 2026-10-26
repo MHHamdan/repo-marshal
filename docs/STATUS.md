@@ -33,9 +33,23 @@ agent using the owner's `gh` login or PAT makes label and comment events with
 
 ## Next step
 
-1. The owner decides on PR #6's live waiver test (comment, then labels) and merges #6, then #7.
-2. After #7 merges, the owner adds a key line to `.github/repomarshal_allowed_signers` (hardware
-   key; see `docs/guides/waivers.md`, "Signed waiver codes").
+**v0.9 PR: live test of signed waivers** (`claude/v0.9`, main merged in at 116a9a1):
+- `CLAUDE.md`: never post PR comments, reviews or issues on GitHub; report in chat (owner's rule,
+  2026-10-16).
+- `repomarshal doctor` reports the waiver setup (policy.waivers) and flags weak signed-code
+  configurations. On this repository it reports the owner's key (`MHHamdan`, `ssh-ed25519`,
+  namespace `repomarshal-waiver`) and the expected T41 problem: a software key.
+- The owner's signing key is on main at 116a9a1: a software ed25519 key, passphrase-protected,
+  not in ssh-agent (no FIDO device available). This is the weaker T41 setup, documented as such.
+- Judge prediction (main's judge at 116a9a1, BASE = 116a9a1): UNKNOWN, one open item,
+  `integration` (risk elevated by `agent.config_changed` + `code.changed`; no integration gate).
+
+Then:
+1. The owner runs `repomarshal waive-sign integration ...` for the PR head (command given in
+   chat), posts the two lines as a new PR comment within 30 minutes, then adds the label
+   `repomarshal-waive:integration`.
+2. Record the live result of both judges (advisory dogfood and `repomarshal/verdict`) here.
+   Expected: PASS, with the waiver identity `MHHamdan (ssh-signed)`.
 3. Then ship 0.1.0 (`docs/guides/release.md`).
 
 ## Upstream repos inspected
