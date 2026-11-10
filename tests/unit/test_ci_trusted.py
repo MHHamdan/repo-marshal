@@ -398,6 +398,28 @@ def test_superseded_run_posts_nothing(tmp_path, gh):
     assert ci.commit_status(res)[0] == "skip"
 
 
+def test_an_in_progress_newer_run_supersedes(tmp_path, gh):
+    pr = PR(tmp_path)
+    serve(gh, pr)
+    runs = gh.routes[f"/repos/{REPO}/actions/workflows/ci.yml/runs"]["workflow_runs"]
+    runs.append({**runs[0], "id": int(RUN_ID) + 1, "status": "in_progress", "conclusion": None})
+    results, jobs = run_gates(pr)
+    assert ci.commit_status(trusted(pr, gh, results, jobs))[0] == "skip"
+
+
+def test_a_cancelled_newer_run_does_not_supersede(tmp_path, gh):
+    """Two label events at once start two runs; GitHub's concurrency may cancel the one with the
+    higher id. The surviving older run must still post its verdict (PR #11, runs 68 and 69)."""
+    pr = PR(tmp_path)
+    serve(gh, pr)
+    runs = gh.routes[f"/repos/{REPO}/actions/workflows/ci.yml/runs"]["workflow_runs"]
+    runs.append(
+        {**runs[0], "id": int(RUN_ID) + 1, "status": "completed", "conclusion": "cancelled"}
+    )
+    results, jobs = run_gates(pr)
+    assert ci.commit_status(trusted(pr, gh, results, jobs))[0] == "success"
+
+
 def test_a_newer_push_run_does_not_supersede(tmp_path, gh):
     """A ci run for the same commit from another event (e.g. a PR-edited push trigger) must not
     silence the pull_request run's verdict."""

@@ -256,7 +256,9 @@ How it works:
      verdict never stands while its inputs (labels, code) change;
    - `verdict`, when the ci run completes (cancelled runs too): read-only, no secrets. It
      installs the judge from the workflow's own default-branch commit (never from a commit the
-     PR chose), checks out the PR head as data only, and runs `repomarshal ci trusted-verdict`;
+     PR chose), checks out the PR head as data only, and runs `repomarshal ci trusted-verdict`.
+     A run is skipped (nothing posted) only when a newer, not cancelled ci run exists for the
+     same commit: two label events at once start two runs, and GitHub may cancel either one;
    - `post`: posts the state the verdict job produced, or `error` if it produced none.
 
    Only `pending` and `post` can reach the App token, and they run nothing that was installed.

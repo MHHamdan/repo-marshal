@@ -553,6 +553,9 @@ def trusted_verdict(
             return unknown("pull request without a number")
         pr = gh.get(f"/repos/{repo_name}/pulls/{number}")
         # A newer pull_request run of ci for the same commit brings its own, fresher verdict.
+        # A cancelled run brings none: when two label events start runs at once, GitHub's
+        # concurrency can cancel the one with the higher id, and the surviving older run must
+        # still post its verdict (PR #11: run 68 PASS was silenced by cancelled run 69).
         newer = gh.get(
             f"/repos/{repo_name}/actions/workflows/{Path(WORKFLOW_PATH).name}/runs",
             {"head_sha": head_sha, "event": "pull_request", "per_page": 100},
@@ -566,6 +569,7 @@ def trusted_verdict(
             and r["id"] > int(run_id)
             and r.get("event") == "pull_request"
             and r.get("head_sha") == head_sha
+            and r.get("conclusion") != "cancelled"
             for r in runs
         ):
             return DoneResult(Verdict.UNKNOWN, (SUPERSEDED,), None, None, None)

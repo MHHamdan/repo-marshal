@@ -32,7 +32,8 @@ on:
     workflows: [ci]
     # requested: reset the status as soon as a new ci run starts (the old verdict no longer
     # applies); completed: judge it. A cancelled run is judged too (its gates are missing, so
-    # it is UNKNOWN) unless a newer run for the same commit supersedes it.
+    # it is UNKNOWN) unless a newer run for the same commit supersedes it. A cancelled newer run
+    # supersedes nothing: GitHub's concurrency can cancel the higher-numbered of two runs.
     types: [requested, completed]
 
 permissions: {}
