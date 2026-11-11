@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Enforce a single contributor: every commit must be authored and committed by
 # the repo owner, with no co-author trailers or AI-assistant attribution.
+# One exception: a merge made with GitHub's merge button (two parents, authored
+# by the owner, committer "GitHub <noreply@github.com>") passes the committer check.
 #   scripts/check-commit-identity.sh <rev-range>     audit existing commits
 #   scripts/check-commit-identity.sh --msg <file>    commit-msg hook mode
 set -euo pipefail
@@ -29,7 +31,13 @@ range="${1:?usage: $0 <rev-range> | --msg <file>}"
 for sha in $(git rev-list "$range"); do
   ae=$(git log -1 --format=%ae "$sha"); ce=$(git log -1 --format=%ce "$sha")
   [[ "$ae" == "$OWNER_EMAIL" ]] || { echo "✗ ${sha:0:8}: author $ae"; fail=1; }
-  [[ "$ce" == "$OWNER_EMAIL" ]] || { echo "✗ ${sha:0:8}: committer $ce"; fail=1; }
+  if [[ "$ce" != "$OWNER_EMAIL" ]]; then
+    cn=$(git log -1 --format=%cn "$sha"); parents=$(git log -1 --format=%p "$sha" | wc -w)
+    if ! [[ "$ce" == "noreply@github.com" && "$cn" == "GitHub" && "$parents" == 2 \
+            && "$ae" == "$OWNER_EMAIL" ]]; then
+      echo "✗ ${sha:0:8}: committer $ce"; fail=1
+    fi
+  fi
   check_msg "${sha:0:8}" "$(git log -1 --format=%B "$sha")"
 done
 [[ $fail == 0 ]] && echo "✓ all commits in $range: single contributor $OWNER_EMAIL"

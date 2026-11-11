@@ -35,9 +35,14 @@ waiver labels one at a time, or re-run ci after both are on.
 3. Ship 0.1.0 (`docs/guides/release.md`).
 
 Open:
-- `commit-identity` push runs fail on GitHub-made merge commits (94fa582, 66ab69c, 694ebe7:
-  committer `noreply@github.com`). Owner to choose: merge locally (fast-forward), or allow GitHub
-  as committer on two-parent merge commits authored by the owner.
+- None blocking.
+
+Decided:
+- `commit-identity` on GitHub-made merge commits (94fa582, 66ab69c, 694ebe7): the check now
+  accepts a committer `GitHub <noreply@github.com>` only on a two-parent commit authored by the
+  owner, with the message check unchanged (`scripts/check-commit-identity.sh`,
+  `tests/unit/test_commit_identity_script.py`). Keeps the PR merge button; squash/rebase merges
+  still fail (one parent), so use "Create a merge commit".
 - Lessons from the live test: a label alone does nothing without the signed comment; a comment
   does not re-run CI; removing the label voids earlier codes; every new head or key rotation needs
   a new signature.
