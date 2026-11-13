@@ -22,8 +22,12 @@ ca89739 (stale signatures from the old head). Only the `ci-workflow` code was re
 the labels were not cycled and `integration` was not signed before the merge (03:33:35Z). All test
 jobs had passed on ca89739, and ci on main ed4ca8f passed.
 
-**main has no branch protection** (`GET /branches/main/protection` → 404), so
-`repomarshal/verdict` is not a required check and nothing blocks a merge on UNKNOWN or FAIL.
+**main is protected (2026-11-13)**: PR required (0 approvals: solo maintainer), required status
+`repomarshal/verdict` pinned to GitHub Actions (app 15368; no RepoMarshal App configured yet),
+branches must be up to date (T37), no force pushes or deletions, merge commits only (squash and
+rebase disabled, they fail `commit-identity`). Admins are **not** enforced, so the owner can
+override a stuck verdict; `docs/guides/ci.md` recommends enforcing them once a GitHub App posts
+the status.
 
 Release setup done on GitHub (2026-11-11): environment `pypi` (required reviewer MHHamdan, tag
 rule `v*`), variable `RELEASE_TAGGER_EMAILS=mh2022ets@gmail.com`, tag ruleset "release tags"
@@ -31,10 +35,9 @@ rule `v*`), variable `RELEASE_TAGGER_EMAILS=mh2022ets@gmail.com`, tag ruleset "r
 
 ## Next step
 
-1. **Owner: protect main** (`docs/guides/ci.md`, "Branch protection"): require a PR, require the
-   status `repomarshal/verdict` (pinned to the App if one is configured), require branches to be
-   up to date (T37), allow only merge commits (squash/rebase fail `commit-identity`). Until then
-   the trusted verdict is advisory.
+1. Optional hardening: create the RepoMarshal GitHub App (`docs/guides/ci.md`, "Who may post that
+   status") and re-pin the required check to it; without it any workflow with
+   `statuses: write` can post `repomarshal/verdict`. Then enforce admins.
 2. **Owner: ship 0.1.0** (`docs/guides/release.md`): add the PyPI pending publisher (project
    `repomarshal`, owner `MHHamdan`, repo `repo-marshal`, workflow `release.yml`, environment
    `pypi`); confirm the tag-signing key is a GitHub *Signing key* (not checkable from here: the
