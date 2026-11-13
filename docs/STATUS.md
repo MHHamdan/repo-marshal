@@ -1,51 +1,53 @@
 # RepoMarshal — Session Status
 
-_Last updated: 2026-11-10_
+_Last updated: 2026-11-13_
 
 ## Current phase
 
-**v0.10 is in review: PR #11** (`claude/v0.10-dogfood-binding`). v0.7, v0.8 and v0.9 are merged
-(PRs #6, #7, #8; main at 694ebe7). The live signed-waiver test on PR #8 passed: the trusted
-`repomarshal/verdict` was PASS with `WAIVED by MHHamdan (ssh-signed)`.
+**v0.10 is merged: PR #11, merge commit ed4ca8f (2026-11-13).** v0.7 to v0.10 are all on main.
 
-PR #11 fixes the two problems that test exposed:
+v0.10 contents:
+1. **Advisory dogfood UNKNOWN fixed (c022863).** The verdict step redirected its JSON into the
+   checkout, so the verdict job's change set, plan hash and tree digest differed from the plan
+   job's and every gate result was rejected as unbound. The JSON now goes to `$RUNNER_TEMP`.
+2. **Trusted verdict label race fixed (18e3e45).** Two waiver labels added in the same second
+   started ci runs 68 and 69; GitHub cancelled 69 (the higher id), and the judge let the
+   cancelled run supersede run 68's PASS. A cancelled run now never supersedes.
+3. **`commit-identity` accepts GitHub merge-button merges (ca89739)**: committer
+   `GitHub <noreply@github.com>` only on a two-parent commit authored by the owner, message check
+   unchanged. Verified live: the push run for merge commit ed4ca8f passed.
 
-1. **Advisory dogfood UNKNOWN (c022863).** The verdict step redirected its JSON into the
-   checkout; the shell created the file before the judge started, so the verdict job's change set,
-   plan hash and tree digest differed from the plan job's and every gate result was rejected as
-   unbound. The JSON now goes to `$RUNNER_TEMP`. On PR #11 run 68 (40252453887) the dogfood job
-   passes.
-2. **Trusted verdict stuck at UNKNOWN on a label race.** Adding the `integration` and
-   `ci-workflow` labels in the same second started ci runs 68 and 69. GitHub's concurrency
-   cancelled run 69, the higher id. The judge treated any higher-id run as superseding, so run
-   68's PASS was skipped ("superseded") and run 69's UNKNOWN (no rm-gate jobs) stayed as the
-   status. Fix: a cancelled run never supersedes (`src/repomarshal/ci.py`, `trusted_verdict`);
-   an in-progress newer run still does. Tests in `tests/unit/test_ci_trusted.py`.
+**No live verdict for v0.10.** PR #11 was merged with `repomarshal/verdict` = UNKNOWN on head
+ca89739 (stale signatures from the old head). Only the `ci-workflow` code was re-signed (03:32:56Z);
+the labels were not cycled and `integration` was not signed before the merge (03:33:35Z). All test
+jobs had passed on ca89739, and ci on main ed4ca8f passed.
 
-The trusted verdict runs main's judge, so fix 2 only applies after merge. On PR #11 itself, add
-waiver labels one at a time, or re-run ci after both are on.
+**main has no branch protection** (`GET /branches/main/protection` → 404), so
+`repomarshal/verdict` is not a required check and nothing blocks a merge on UNKNOWN or FAIL.
+
+Release setup done on GitHub (2026-11-11): environment `pypi` (required reviewer MHHamdan, tag
+rule `v*`), variable `RELEASE_TAGGER_EMAILS=mh2022ets@gmail.com`, tag ruleset "release tags"
+(`refs/tags/v*`: creation, update, deletion restricted; admins bypass).
 
 ## Next step
 
-1. Owner: for the new PR #11 head, run `repomarshal waive-sign` for `ci-workflow` (reason must
-   name the new ci.yml blob id, `git rev-parse HEAD:.github/workflows/ci.yml | cut -c1-12`) and
-   `integration`, post both comments, then remove and re-add the labels **one at a time**
-   (a relabel after removal needs the new codes, signed after the removal).
-2. Confirm dogfood PASS and `repomarshal/verdict` PASS on the new head; record here; merge #11.
-3. Ship 0.1.0 (`docs/guides/release.md`).
+1. **Owner: protect main** (`docs/guides/ci.md`, "Branch protection"): require a PR, require the
+   status `repomarshal/verdict` (pinned to the App if one is configured), require branches to be
+   up to date (T37), allow only merge commits (squash/rebase fail `commit-identity`). Until then
+   the trusted verdict is advisory.
+2. **Owner: ship 0.1.0** (`docs/guides/release.md`): add the PyPI pending publisher (project
+   `repomarshal`, owner `MHHamdan`, repo `repo-marshal`, workflow `release.yml`, environment
+   `pypi`); confirm the tag-signing key is a GitHub *Signing key* (not checkable from here: the
+   `gh` token lacks `admin:ssh_signing_key`); then `git tag -s v0.1.0 -m "RepoMarshal 0.1.0"`,
+   push the tag, approve `publish`.
+3. Next live signed-waiver test happens on the next PR that needs a waiver, with protection on.
 
 Open:
 - None blocking.
 
-Decided:
-- `commit-identity` on GitHub-made merge commits (94fa582, 66ab69c, 694ebe7): the check now
-  accepts a committer `GitHub <noreply@github.com>` only on a two-parent commit authored by the
-  owner, with the message check unchanged (`scripts/check-commit-identity.sh`,
-  `tests/unit/test_commit_identity_script.py`). Keeps the PR merge button; squash/rebase merges
-  still fail (one parent), so use "Create a merge commit".
-- Lessons from the live test: a label alone does nothing without the signed comment; a comment
-  does not re-run CI; removing the label voids earlier codes; every new head or key rotation needs
-  a new signature.
+Lessons from the live tests: a label alone does nothing without the signed comment; a comment
+does not re-run CI; removing the label voids earlier codes; every new head or key rotation needs
+a new signature; add waiver labels one at a time; squash/rebase merges fail `commit-identity`.
 
 ## Upstream repos inspected
 
