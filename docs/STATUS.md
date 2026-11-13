@@ -1,56 +1,51 @@
 # RepoMarshal — Session Status
 
-_Last updated: 2026-10-14_
+_Last updated: 2026-11-10_
 
 ## Current phase
 
-**v0.8 is in review: PR #7** (`claude/v0.8`), stacked on PR #6 (v0.7, `claude/v0.7`). Neither is
-merged. On PR #6 the owner has not yet added the waiver comment or labels, so there is no live
-waiver result yet.
+**v0.10 is in review: PR #11** (`claude/v0.10-dogfood-binding`). v0.7, v0.8 and v0.9 are merged
+(PRs #6, #7, #8; main at 694ebe7). The live signed-waiver test on PR #8 passed: the trusted
+`repomarshal/verdict` was PASS with `WAIVED by MHHamdan (ssh-signed)`.
 
-v0.8 closes **T40** (T36 and T37 were already used in `docs/security/threat-model.md`): a local
-agent using the owner's `gh` login or PAT makes label and comment events with
-`performed_via_github_app: null`, so it could self-grant author waivers.
+PR #11 fixes the two problems that test exposed:
 
-- `src/repomarshal/waiversig.py`: SSH-signed waiver codes. The signed message binds repository,
-  PR, head SHA, target, reason and `signed-at`. `ssh-keygen -Y verify`, namespace
-  `repomarshal-waiver`, allowed-signers file at BASE, principal = the commenter's login.
-- `completion.waiver_signers` (BASE path). When set, every label waiver needs
-  `repomarshal-waive-sig <target> <signed-at> <sig>`, posted within 30 minutes of `signed-at` and
-  signed after the label's last removal. Author waivers require it (deliberate breaking change).
-- `repomarshal waive-sign` prints the comment.
-- This repository: `waiver_signers = ".github/repomarshal_allowed_signers"`. The file has only
-  comments until the owner adds their public key line, so author waivers are rejected after merge
-  until then.
-- Fresh fail-open review (`tests/review_v08/`, 30 tests). It found one fail-open (a withdrawn
-  signed waiver could be revived by a relabel or a reposted copy), fixed with `signed-at`, plus
-  hardening.
-- Local: 1575 passed, 18 skipped; ruff clean.
-- CI on PR #7 head 548b819: lint, mcp, test 3.11/3.12/3.13, rm-plan and rm-gate-0 pass.
-  rm-gate-1 (`root:unit`) is UNKNOWN because its gate definition changed (new
-  `tests/review_v08/conftest.py`). dogfood and `repomarshal/verdict` are UNKNOWN with `root:unit`,
-  `integration` and `dep_audit` open, as predicted by the local run of main's judge.
+1. **Advisory dogfood UNKNOWN (c022863).** The verdict step redirected its JSON into the
+   checkout; the shell created the file before the judge started, so the verdict job's change set,
+   plan hash and tree digest differed from the plan job's and every gate result was rejected as
+   unbound. The JSON now goes to `$RUNNER_TEMP`. On PR #11 run 68 (40252453887) the dogfood job
+   passes.
+2. **Trusted verdict stuck at UNKNOWN on a label race.** Adding the `integration` and
+   `ci-workflow` labels in the same second started ci runs 68 and 69. GitHub's concurrency
+   cancelled run 69, the higher id. The judge treated any higher-id run as superseding, so run
+   68's PASS was skipped ("superseded") and run 69's UNKNOWN (no rm-gate jobs) stayed as the
+   status. Fix: a cancelled run never supersedes (`src/repomarshal/ci.py`, `trusted_verdict`);
+   an in-progress newer run still does. Tests in `tests/unit/test_ci_trusted.py`.
+
+The trusted verdict runs main's judge, so fix 2 only applies after merge. On PR #11 itself, add
+waiver labels one at a time, or re-run ci after both are on.
 
 ## Next step
 
-**v0.9 PR: live test of signed waivers** (`claude/v0.9`, main merged in at 116a9a1):
-- `CLAUDE.md`: never post PR comments, reviews or issues on GitHub; report in chat (owner's rule,
-  2026-10-16).
-- `repomarshal doctor` reports the waiver setup (policy.waivers) and flags weak signed-code
-  configurations. On this repository it reports the owner's key (`MHHamdan`, `ssh-ed25519`,
-  namespace `repomarshal-waiver`) and the expected T41 problem: a software key.
-- The owner's signing key is on main at 116a9a1: a software ed25519 key, passphrase-protected,
-  not in ssh-agent (no FIDO device available). This is the weaker T41 setup, documented as such.
-- Judge prediction (main's judge at 116a9a1, BASE = 116a9a1): UNKNOWN, one open item,
-  `integration` (risk elevated by `agent.config_changed` + `code.changed`; no integration gate).
+1. Owner: for the new PR #11 head, run `repomarshal waive-sign` for `ci-workflow` (reason must
+   name the new ci.yml blob id, `git rev-parse HEAD:.github/workflows/ci.yml | cut -c1-12`) and
+   `integration`, post both comments, then remove and re-add the labels **one at a time**
+   (a relabel after removal needs the new codes, signed after the removal).
+2. Confirm dogfood PASS and `repomarshal/verdict` PASS on the new head; record here; merge #11.
+3. Ship 0.1.0 (`docs/guides/release.md`).
 
-Then:
-1. The owner runs `repomarshal waive-sign integration ...` for the PR head (command given in
-   chat), posts the two lines as a new PR comment within 30 minutes, then adds the label
-   `repomarshal-waive:integration`.
-2. Record the live result of both judges (advisory dogfood and `repomarshal/verdict`) here.
-   Expected: PASS, with the waiver identity `MHHamdan (ssh-signed)`.
-3. Then ship 0.1.0 (`docs/guides/release.md`).
+Open:
+- None blocking.
+
+Decided:
+- `commit-identity` on GitHub-made merge commits (94fa582, 66ab69c, 694ebe7): the check now
+  accepts a committer `GitHub <noreply@github.com>` only on a two-parent commit authored by the
+  owner, with the message check unchanged (`scripts/check-commit-identity.sh`,
+  `tests/unit/test_commit_identity_script.py`). Keeps the PR merge button; squash/rebase merges
+  still fail (one parent), so use "Create a merge commit".
+- Lessons from the live test: a label alone does nothing without the signed comment; a comment
+  does not re-run CI; removing the label voids earlier codes; every new head or key rotation needs
+  a new signature.
 
 ## Upstream repos inspected
 

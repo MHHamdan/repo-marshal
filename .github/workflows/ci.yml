@@ -292,6 +292,9 @@ jobs:
         with:
           pattern: rm-gate-*
           path: ${{ runner.temp }}/rm-results
+      # Write nothing into the checkout: its tree is bound by the plan job (plan_hash and tree
+      # digest), and a file created here, even by a shell redirect before the judge starts, is
+      # an untracked change that unbinds every gate result (v0.10, PR #8).
       - name: repomarshal verdict
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -303,17 +306,17 @@ jobs:
           set +e
           if "$RM" ci --help > /dev/null 2>&1; then
             "$RM" ci verdict --base "$BASE_SHA" --expect "$RM_EXPECT" \
-              --results "$RUNNER_TEMP/rm-results" --json > repomarshal-done.json
+              --results "$RUNNER_TEMP/rm-results" --json > "$RUNNER_TEMP/repomarshal-done.json"
           else
             # Legacy (BASE judge before v0.4): one job runs the gates and judges.
             WAIVERS=""
             if "$RM" done --help | grep -q -- "--waivers"; then WAIVERS="--waivers github"; fi
             # shellcheck disable=SC2086
-            "$RM" done --base "$BASE_SHA" $WAIVERS --json > repomarshal-done.json
+            "$RM" done --base "$BASE_SHA" $WAIVERS --json > "$RUNNER_TEMP/repomarshal-done.json"
           fi
           code=$?
           set -e
-          cat repomarshal-done.json
+          cat "$RUNNER_TEMP/repomarshal-done.json"
           echo "repomarshal exit code: $code (0 PASS, 1 FAIL, 2 UNKNOWN, 3 BLOCKED, 4 error)"
           exit "$code"
       - name: Upload evidence
@@ -322,7 +325,7 @@ jobs:
         with:
           name: repomarshal-evidence
           path: |
-            repomarshal-done.json
+            ${{ runner.temp }}/repomarshal-done.json
             .repomarshal/evidence/
           if-no-files-found: warn
           retention-days: 30
