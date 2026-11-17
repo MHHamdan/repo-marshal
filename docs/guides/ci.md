@@ -169,12 +169,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      # Install RepoMarshal (pinned to a commit) FIRST, in its own venv, then every tool your
+      # Install RepoMarshal (pinned to a version) FIRST, in its own venv, then every tool your
       # gates run (see "Order matters" in section 2).
       - run: |
           python -m venv "$RUNNER_TEMP/rm-venv"
-          "$RUNNER_TEMP/rm-venv/bin/python" -m pip install \
-            "repomarshal @ git+https://github.com/MHHamdan/repo-marshal@<commit-sha>"
+          "$RUNNER_TEMP/rm-venv/bin/python" -m pip install "repomarshal==0.1.0"
       - run: python -m pip install -e ".[dev]"   # your project's toolchain: ruff, pytest, ...
       - name: repomarshal done
         env:
@@ -196,7 +195,8 @@ jobs:
             .repomarshal/evidence/
 ```
 
-RepoMarshal is not yet on PyPI, so install it from a pinned commit (or a wheel you build). Passing
+Pin an exact version (`repomarshal==0.1.0`; PyPI publishes provenance for it from this
+repository's `release.yml`), or a commit with `repomarshal @ git+https://...@<sha>`. Passing
 the SHA through `env` rather than interpolating `${{ }}` into the script is a habit worth keeping,
 even for a SHA.
 

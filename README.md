@@ -31,8 +31,6 @@ is nothing to configure.
 
 ```bash
 python3 -m venv ~/.repomarshal && ~/.repomarshal/bin/pip install repomarshal
-#   before the first PyPI release, use:
-#   ~/.repomarshal/bin/pip install "repomarshal @ git+https://github.com/MHHamdan/repo-marshal"
 export PATH="$HOME/.repomarshal/bin:$PATH"
 
 cd your-repo                       # make a change (or let your agent make one), then:
@@ -42,8 +40,9 @@ repomarshal done                           # runs them: exit 0 PASS, 1 FAIL, 2 U
 
 This exact path was measured by [`scripts/quickstart-check.sh`](scripts/quickstart-check.sh)
 in a fresh `python:3.12` Docker container on 2026-10-14. The script creates a tiny project with
-one module and one pytest test, installs RepoMarshal (from git, since the PyPI release does not
-exist yet), changes the code and runs `plan` and `done`.
+one module and one pytest test, installs RepoMarshal (from git: these runs predate the PyPI
+release; not yet re-measured with `pip install repomarshal`), changes the code and runs `plan`
+and `done`.
 - Container run 1: 11.1 s to install, PASS at 12.6 s.
 - Container run 2: 10.2 s to install, PASS at 11.9 s.
 
@@ -207,7 +206,8 @@ PASS. The tool version is recorded in each gate result.
 ## Roadmap
 
 See [`docs/roadmap.md`](docs/roadmap.md). Next up: evidence chaining and a `status` command,
-workspace-aware deduplication of monorepo gates, `db.migration`, and publishing to PyPI.
+workspace-aware deduplication of monorepo gates, and `db.migration`. 0.1.0 is on
+[PyPI](https://pypi.org/project/repomarshal/), published from a signed tag by trusted publishing.
 
 ## Development
 
