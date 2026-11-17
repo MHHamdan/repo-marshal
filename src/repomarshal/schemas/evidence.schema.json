@@ -163,6 +163,13 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
+    "prev_digest": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
     "plan_hash": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"

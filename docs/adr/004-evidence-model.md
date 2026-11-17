@@ -26,7 +26,9 @@ OS user. The prior art points two ways:
   - per-gate argv, exit code, duration, sha256 of stdout and stderr, and a redacted 40-line tail;
   - the RepoMarshal version and `record_digest`.
 
-  A hash chain (`prev_digest`) is SHOULD. Signing is NOT NOW.
+  A hash chain (`prev_digest`: the previous record's `record_digest`) shipped in v0.11;
+  `repomarshal status` checks it and the newest record's digest, and reports FRESH or STALE.
+  Records from before the chain count as legacy. Signing is NOT NOW.
 - **Anchor.** A local verdict is advisory for the agent's inner loop. The authoritative verdict comes
   from re-running `done` where the agent has no write access (CI or a reviewer). Every `done` output
   says so.

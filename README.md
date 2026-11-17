@@ -133,6 +133,9 @@ settings. The authoritative verdict comes from CI (see below).
   never turns a FAIL into a PASS, counts only when the BASE `repomarshal.toml` sets
   `[completion] waivers_permit_pass = true`, and is recorded in the evidence. The Stop hook and the
   MCP server never accept waivers. See [`docs/guides/waivers.md`](docs/guides/waivers.md).
+- **`repomarshal status`:** is the last verdict still valid? FRESH while the working tree matches
+  what `done` verified, STALE after any edit (which counts as no evidence). It also checks the
+  evidence records' digest chain for accidental edits or deletions.
 - **`repomarshal doctor`:** reports the detected gates, the policy, and the optional providers.
   `repomarshal init` writes a commented `repomarshal.toml` and touches nothing else.
 
@@ -205,8 +208,7 @@ PASS. The tool version is recorded in each gate result.
 
 ## Roadmap
 
-See [`docs/roadmap.md`](docs/roadmap.md). Next up: evidence chaining and a `status` command,
-workspace-aware deduplication of monorepo gates, and `db.migration`. 0.1.0 is on
+See [`docs/roadmap.md`](docs/roadmap.md). Next up: workspace-aware deduplication of monorepo gates, and `db.migration`. 0.1.0 is on
 [PyPI](https://pypi.org/project/repomarshal/), published from a signed tag by trusted publishing.
 
 ## Development

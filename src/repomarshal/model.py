@@ -415,6 +415,9 @@ class EvidenceRecord:
         "`repomarshal done` where the agent cannot write (CI or a reviewer)."
     )
     waivers: tuple[Waiver, ...] = ()  # v0.3: every waiver that was considered
+    # record_digest of the record written before this one in the same repository (ADR-004 hash
+    # chain); None for the first. Detects accidental edits or deletions, not an attacker.
+    prev_digest: str | None = None
     schema_version: str = SCHEMA_VERSION
     record_digest: str = ""
 

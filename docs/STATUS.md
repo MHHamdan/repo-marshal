@@ -4,6 +4,14 @@ _Last updated: 2026-11-17_
 
 ## Current phase
 
+**v0.11 in review (`claude/v0.11-status`, stacked on PR #14 `claude/post-release-docs`):**
+roadmap SHOULD #1. Every evidence record now carries `prev_digest` (the previous record's
+`record_digest`); record file names use a microsecond stamp so name order is write order.
+`repomarshal status [--json]` reports the newest record's digest, the chain (records from 0.1.0
+count as legacy) and FRESH/STALE against the current tree; exit is the verdict code only when the
+record is intact, the chain unbroken and the tree FRESH, else 2. Tests:
+`tests/acceptance/test_status.py` (10). Local: 1611 passed, 17 skipped; ruff clean.
+
 **RepoMarshal 0.1.0 is released on PyPI (2026-11-17):** <https://pypi.org/project/repomarshal/0.1.0/>.
 Tag `v0.1.0` on 47e1fad, SSH-signed by mh2022ets@gmail.com (GitHub: verified, reason `valid`;
 signing key "tag signing" = `~/.ssh/id_ed25519`, separate from the waiver key). Release run
@@ -45,6 +53,9 @@ rule `v*`), variable `RELEASE_TAGGER_EMAILS=mh2022ets@gmail.com`, tag ruleset "r
 
 ## Next step
 
+0. Merge PR #14, then the v0.11 PR. Next roadmap item: workspace-aware gate deduplication
+   (SHOULD #1 now). Release 0.1.1 or 0.2.0 when the owner decides (bump `pyproject.toml` and
+   `__version__`, then `docs/guides/release.md`).
 1. Optional hardening: create the RepoMarshal GitHub App (`docs/guides/ci.md`, "Who may post that
    status") and re-pin the required check to it; without it any workflow with
    `statuses: write` can post `repomarshal/verdict`. Then enforce admins.
