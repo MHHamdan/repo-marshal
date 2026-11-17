@@ -1,8 +1,18 @@
 # RepoMarshal — Session Status
 
-_Last updated: 2026-11-13_
+_Last updated: 2026-11-17_
 
 ## Current phase
+
+**RepoMarshal 0.1.0 is released on PyPI (2026-11-17):** <https://pypi.org/project/repomarshal/0.1.0/>.
+Tag `v0.1.0` on 47e1fad, SSH-signed by mh2022ets@gmail.com (GitHub: verified, reason `valid`;
+signing key "tag signing" = `~/.ssh/id_ed25519`, separate from the waiver key). Release run
+44116450197: build and publish passed, publish approved by the owner in environment `pypi`.
+PyPI trusted publisher (was pending) is now active; PEP 740 provenance names
+`MHHamdan/repo-marshal`, `release.yml`, environment `pypi`. A clean `pip install
+repomarshal==0.1.0` reports `repomarshal 0.1.0`. The build is reproducible: a local
+`build==1.2.2.post1` build of 47e1fad gives the same SHA-256 as PyPI (wheel 23c2a581aa08b583...,
+sdist 3ead803aaac2ef52...).
 
 **v0.10 is merged: PR #11, merge commit ed4ca8f (2026-11-13).** v0.7 to v0.10 are all on main.
 
@@ -38,11 +48,7 @@ rule `v*`), variable `RELEASE_TAGGER_EMAILS=mh2022ets@gmail.com`, tag ruleset "r
 1. Optional hardening: create the RepoMarshal GitHub App (`docs/guides/ci.md`, "Who may post that
    status") and re-pin the required check to it; without it any workflow with
    `statuses: write` can post `repomarshal/verdict`. Then enforce admins.
-2. **Owner: ship 0.1.0** (`docs/guides/release.md`): add the PyPI pending publisher (project
-   `repomarshal`, owner `MHHamdan`, repo `repo-marshal`, workflow `release.yml`, environment
-   `pypi`); confirm the tag-signing key is a GitHub *Signing key* (not checkable from here: the
-   `gh` token lacks `admin:ssh_signing_key`); then `git tag -s v0.1.0 -m "RepoMarshal 0.1.0"`,
-   push the tag, approve `publish`.
+2. ~~Ship 0.1.0~~ done (above).
 3. Next live signed-waiver test happens on the next PR that needs a waiver, with protection on.
 
 Open:
