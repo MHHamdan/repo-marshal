@@ -99,6 +99,15 @@ threat model priorities.
   allowed-signers file at BASE. Author waivers require it. `repomarshal waive-sign` prints the
   comment.
 
+## Done after v0.8
+
+- **v0.9:** `doctor` reports the waiver setup and flags weak signed-code setups; first live
+  signed-waiver PASS (PR #8).
+- **v0.10:** dogfood verdict JSON kept out of the bound checkout; a cancelled ci run no longer
+  supersedes the trusted verdict; `commit-identity` accepts GitHub merge-button merges.
+- **0.1.0 on PyPI** (2026-11-17): signed tag, trusted publishing with provenance, reproducible
+  build (local build matches PyPI's SHA-256).
+
 ## SHOULD: next, in priority order
 
 1. **Evidence hash chain** (`prev_digest`) and a `status` command that reports STALE.
@@ -107,7 +116,6 @@ threat model priorities.
 3. **`db.migration` signal.**
 4. **Inventory from `AGENTS.md ## Commands`.**
 5. **CI test for the startup budget.**
-6. **Publish to PyPI**, with trusted publishing.
 
 ## MAY: after the core is proven
 
