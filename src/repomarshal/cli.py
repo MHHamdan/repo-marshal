@@ -14,6 +14,9 @@ v0.2 (dispatch only; behaviour lives in the named modules):
     repomarshal doctor [--repo PATH] [--json]          -> repomarshal.doctor.run(args)
     repomarshal done --hook claude-code [--repo PATH]  -> repomarshal.hooks.run(...) (stdin)
     repomarshal mcp                                    -> repomarshal.mcp_server.main()  (extra)
+    repomarshal status [--repo PATH] [--json]          -> repomarshal.status.run(args)
+        (v0.11) newest evidence record: digest, chain, FRESH/STALE; exit = its verdict code only
+        when intact and FRESH, else 2.
 The hook and MCP paths are imported lazily so `plan` and `done` never load them.
 
 v0.4 split CI (threat T26; behaviour in repomarshal.ci):
@@ -112,6 +115,12 @@ def _parser() -> argparse.ArgumentParser:
     dr.add_argument("--repo", default=".", help="repository path (default: .)")
     dr.add_argument("--json", action="store_true", help="machine-readable output")
 
+    st = sub.add_parser(
+        "status", help="is the latest verdict still valid for the working tree? (FRESH/STALE)"
+    )
+    st.add_argument("--repo", default=".", help="repository path (default: .)")
+    st.add_argument("--json", action="store_true", help="machine-readable output")
+
     sub.add_parser("mcp", help="serve plan/done/explain over MCP stdio (needs repomarshal[mcp])")
 
     ci = sub.add_parser("ci", help="split CI verification: plan, isolated gate jobs, verdict")
@@ -185,6 +194,10 @@ def main(argv: list[str] | None = None) -> int:
         from repomarshal import doctor
 
         return doctor.run(args)
+    if args.command == "status":
+        from repomarshal import status
+
+        return status.run(args)
     if args.command == "ci":
         try:
             return _ci(args)

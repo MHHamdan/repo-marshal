@@ -108,14 +108,17 @@ threat model priorities.
 - **0.1.0 on PyPI** (2026-11-17): signed tag, trusted publishing with provenance, reproducible
   build (local build matches PyPI's SHA-256).
 
+- **v0.11 (unreleased):** evidence hash chain (`prev_digest`) and `repomarshal status`: the newest
+  record's digest, the chain, and FRESH/STALE against the current tree; exit is the verdict code
+  only when intact and FRESH.
+
 ## SHOULD: next, in priority order
 
-1. **Evidence hash chain** (`prev_digest`) and a `status` command that reports STALE.
-2. **Workspace-aware gate deduplication:** a root `test` that already runs every package should not
+1. **Workspace-aware gate deduplication:** a root `test` that already runs every package should not
    also require each package's unit gate (field evaluation §9).
-3. **`db.migration` signal.**
-4. **Inventory from `AGENTS.md ## Commands`.**
-5. **CI test for the startup budget.**
+2. **`db.migration` signal.**
+3. **Inventory from `AGENTS.md ## Commands`.**
+4. **CI test for the startup budget.**
 
 ## MAY: after the core is proven
 

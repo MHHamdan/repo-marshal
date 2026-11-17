@@ -60,7 +60,7 @@ trust as running `npm test` yourself.
 | `SkillPick` | `name`, `path`, `matched_domains[]`, `trust` (`repo@base` or `changed-in-diff`) |
 | `Plan` | `schema_version`, `plan_hash`, `mode` (`forecast` without a diff, `binding` with one), `change`, `signals`, `domains`, `risk`, `context`, `skills`, `gates`, `evidence_level`, `policy {source, digest}`, `generator {name, version}` |
 | `GateResult` | `gate_id`, `status` PASS/FAIL/UNKNOWN/WAIVED, `exit_code`, `duration_ms`, `stdout_sha256`, `stderr_sha256`, `output_tail` (redacted), `reason` |
-| `EvidenceRecord` | `schema_version`, `plan_hash`, `base`, `head`, `tree_digest_before`, `tree_digest_after`, `policy_digest`, `results[]`, `verdict`, `verdict_reasons[]`, `prev_digest` (later), `record_digest` |
+| `EvidenceRecord` | `schema_version`, `plan_hash`, `base`, `head`, `tree_digest_before`, `tree_digest_after`, `policy_digest`, `results[]`, `verdict`, `verdict_reasons[]`, `prev_digest` (v0.11), `record_digest` |
 
 `plan_hash` is the sha256 of the canonical JSON of the plan with `plan_hash` itself removed. Canonical
 JSON means sorted keys, no whitespace and UTF-8. The same rule produces `record_digest`.
@@ -391,7 +391,7 @@ only as its recorded gitlink.
   UNKNOWN result. If the digests differ at any point (a formatter rewrote files, or the agent kept
   editing), the verdict is **UNKNOWN**, with reason "working tree changed during verification".
 - **Validity later:** a verdict is valid only while the current tree digest equals `tree_digest_after`.
-  `repomarshal status` (later) recomputes it and reports a mismatch as **STALE**, which counts as no
+  `repomarshal status` (v0.11) recomputes it and reports a mismatch as **STALE**, which counts as no
   evidence. Any edit, commit of different content, or new untracked file invalidates the verdict.
   Committing exactly the verified content does not, because the tree id is unchanged.
 
@@ -446,7 +446,7 @@ makes sure local files are never the source of truth for a verdict:
    re-runs `repomarshal done` from scratch on the pushed commit and compares verdicts. A local PASS
    is advisory for the inner loop. This is written in the README and in every `done` output footer.
 5. **Digests catch accidents, not attackers.** `record_digest`, and the hash chain via
-   `prev_digest` (later), detect accidental or casual edits to the audit trail. They are not a
+   `prev_digest` (v0.11, checked by `repomarshal status`), detect accidental or casual edits to the audit trail. They are not a
    security boundary against the same user. v0.1 does no signing; key management is out of scope.
 6. **Output hygiene.**
    - Only the last 40 lines of each stream are kept, after redaction (tokens, keys, `Authorization`

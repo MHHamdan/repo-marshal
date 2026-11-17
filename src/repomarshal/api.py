@@ -83,6 +83,7 @@ def _record(
         repomarshal_version=__version__,
         created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         waivers=tuple(granted),
+        prev_digest=evidence.latest_digest(root),
     ).with_digest()
     evidence.write_plan(root, p)
     path = evidence.write_record(root, record)
